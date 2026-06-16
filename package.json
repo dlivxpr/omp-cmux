@@ -1,12 +1,14 @@
 {
+  "private": true,
+  "packageManager": "bun@1.3.14",
   "name": "omp-cmux",
   "version": "1.0.0",
   "description": "oh-my-pi cmux plugin — sidebar status, notifications, and split-pane workflow commands",
   "omp": {
-    "extensions": ["./index.ts"]
+    "extensions": ["./extensions/cmux/index.ts"]
   },
   "files": [
-    "*.ts",
+    "extensions/",
     "types/"
   ],
   "scripts": {

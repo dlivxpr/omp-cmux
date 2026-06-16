@@ -1,4 +1,5 @@
 import type {
+	AssistantMessage,
 	ExtensionAPI,
 	SessionStartEvent,
 	AgentStartEvent,

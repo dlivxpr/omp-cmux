@@ -1,11 +1,23 @@
 {
   "name": "omp-cmux",
   "version": "1.0.0",
-  "description": "oh-my-pi cmux extension — sidebar status, notifications, and split-pane workflow commands",
-  "private": true,
-  "pi": {
+  "description": "oh-my-pi cmux plugin — sidebar status, notifications, and split-pane workflow commands",
+  "omp": {
     "extensions": ["./index.ts"]
   },
+  "files": [
+    "*.ts",
+    "types/"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "omp",
+    "oh-my-pi",
+    "plugin",
+    "cmux"
+  ],
   "devDependencies": {
     "@types/node": "^25.6.2",
     "typescript": "^6.0.3"

@@ -39,7 +39,7 @@ export async function getZoxideMatches(
 			["query", "-l", ...keywords],
 			{ timeout: 5000 },
 		);
-		if (result.exitCode !== 0) return [];
+		if (result.code !== 0) return [];
 		return result.stdout
 			.split("\n")
 			.map((l) => l.trim())
@@ -64,7 +64,7 @@ export async function resolveZoxideTarget(
 		const result = await pi.exec("zoxide", ["query", query], {
 			timeout: 5000,
 		});
-		if (result.exitCode === 0) {
+		if (result.code === 0) {
 			const path = result.stdout.trim();
 			if (path) return { ok: true, path };
 		}

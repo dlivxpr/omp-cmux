@@ -23,14 +23,14 @@ export async function execGit(
 			timeout: 10000,
 			cwd,
 		});
-		if (result.exitCode === 0) {
+		if (result.code === 0) {
 			return { ok: true, stdout: result.stdout, stderr: result.stderr };
 		}
 		return {
 			ok: false,
 			stdout: result.stdout,
 			stderr: result.stderr,
-			error: `git exited with code ${result.exitCode}`,
+			error: `git exited with code ${result.code}`,
 		};
 	} catch (err) {
 		return {

@@ -55,7 +55,7 @@ export async function getCallerInfo(
 		["--json", "identify"],
 		{ timeout: CMUX_TIMEOUT_MS },
 	);
-	if (result.exitCode !== 0) {
+	if (result.code !== 0) {
 		return { ok: false, error: "Failed to identify cmux caller" };
 	}
 	try {
@@ -83,7 +83,7 @@ export async function listPanes(
 		["--json", "list-panes", "--workspace", workspaceRef],
 		{ timeout: CMUX_TIMEOUT_MS },
 	);
-	if (result.exitCode !== 0) return [];
+	if (result.code !== 0) return [];
 	try {
 		const parsed = JSON.parse(result.stdout);
 		return Array.isArray(parsed.panes) ? parsed.panes : [];
@@ -142,7 +142,7 @@ export async function openCommandInNewSplit(
 		"--surface",
 		surfaceRef,
 	]);
-	if (splitResult.exitCode !== 0) {
+	if (splitResult.code !== 0) {
 		return { ok: false, error: "Failed to create new split" };
 	}
 
@@ -162,7 +162,7 @@ export async function openCommandInNewSplit(
 		"--command",
 		command,
 	]);
-	if (respawnResult.exitCode !== 0) {
+	if (respawnResult.code !== 0) {
 		return { ok: false, error: "Failed to respawn pane with command" };
 	}
 

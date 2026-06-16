@@ -65,7 +65,7 @@ function extractCurrentTask(ctx: ExtensionCommandContext): string | undefined {
 		if (!Array.isArray(branch)) return undefined;
 		// Walk backwards to find the most recent user message that looks like a task
 		for (let i = branch.length - 1; i >= 0; i--) {
-			const entry = branch[i] as Record<string, unknown> | undefined;
+			const entry = branch[i] as unknown as Record<string, unknown> | undefined;
 			if (!entry) continue;
 			const role =
 				typeof entry.role === "string"

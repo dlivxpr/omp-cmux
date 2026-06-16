@@ -1,3 +1,5 @@
+import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
+import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type {
 	ExtensionAPI,
 	AgentEndEvent,
@@ -5,8 +7,6 @@ import type {
 	InputEvent,
 	SessionShutdownEvent,
 	AgentStartEvent,
-	AgentMessage,
-	AssistantMessage,
 } from "@oh-my-pi/pi-coding-agent";
 import { cmux } from "./cmux";
 import { getNotifyLevel, shouldNotify, getNumberFromEnv } from "./config";
@@ -213,7 +213,7 @@ async function sendNotification(
 	if (body) args.push("--body", body);
 
 	const result = await cmux(pi, ...args);
-	if (result && result.exitCode !== 0) {
+	if (result && result.code !== 0) {
 		cmuxUnavailable = true;
 		return;
 	}
@@ -270,11 +270,11 @@ export function registerNotifyHandlers(
 	pi.on("tool_result", async (event: ToolResultEvent) => {
 		if (event.isError) {
 			if (!tracker.state.firstToolError) {
-				const text = event.content
-					.map((c) => c.text)
-					.filter(Boolean)
-					.join(" ")
-					.slice(0, 200);
+			const text = event.content
+				.filter((c): c is { type: "text"; text: string } => c.type === "text")
+				.map((c) => c.text)
+				.join(" ")
+				.slice(0, 200);
 				tracker.state.firstToolError = text || "Tool error";
 			}
 			return;

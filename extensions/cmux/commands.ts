@@ -56,6 +56,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 
 	pi.registerCommand("cmz", {
 		description: "Open pi session in zoxide directory (right split)",
+		// @ts-expect-error: runtime handles async autocomplete despite sync API type
 		getArgumentCompletions: async (prefix: string) => {
 			const matches = await getZoxideMatches(pi, prefix);
 			if (matches.length === 0) return null;
@@ -79,6 +80,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 
 	pi.registerCommand("cmzh", {
 		description: "Open pi session in zoxide directory (bottom split)",
+		// @ts-expect-error: runtime handles async autocomplete despite sync API type
 		getArgumentCompletions: async (prefix: string) => {
 			const matches = await getZoxideMatches(pi, prefix);
 			if (matches.length === 0) return null;
@@ -103,6 +105,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 	// Aliases
 	pi.registerCommand("z", {
 		description: "Alias for /cmz",
+		// @ts-expect-error: runtime handles async autocomplete despite sync API type
 		getArgumentCompletions: async (prefix: string) => {
 			const matches = await getZoxideMatches(pi, prefix);
 			if (matches.length === 0) return null;
@@ -126,6 +129,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 
 	pi.registerCommand("zh", {
 		description: "Alias for /cmzh",
+		// @ts-expect-error: runtime handles async autocomplete despite sync API type
 		getArgumentCompletions: async (prefix: string) => {
 			const matches = await getZoxideMatches(pi, prefix);
 			if (matches.length === 0) return null;

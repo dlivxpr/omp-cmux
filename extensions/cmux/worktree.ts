@@ -24,27 +24,35 @@ export function parseWorktreeArgs(args: string): {
 	ok: true;
 	request: WorktreeRequest;
 } | { ok: false; error: string } {
-	const parts = args.trim().split(/\s+/);
+	const parts = args.trim() ? args.trim().split(/\s+/) : [];
 	let branch: string | undefined;
 	let fromRef: string | undefined;
 	let noteParts: string[] = [];
+	const usage = "Usage: /cmcv -c <branch> [--from <ref>] [note]";
 
 	for (let i = 0; i < parts.length; i++) {
 		const p = parts[i];
 		if (p === "-c" || p === "--create") {
-			branch = parts[++i];
+			const next = parts[++i];
+			if (!next || next.startsWith("-")) {
+				return { ok: false, error: usage };
+			}
+			branch = next;
 		} else if (p === "-f" || p === "--from") {
-			fromRef = parts[++i];
+			const next = parts[++i];
+			if (!next || next.startsWith("-")) {
+				return { ok: false, error: usage };
+			}
+			fromRef = next;
+		} else if (p.startsWith("-")) {
+			return { ok: false, error: `Unknown option: ${p}. ${usage}` };
 		} else {
 			noteParts.push(p);
 		}
 	}
 
 	if (!branch) {
-		return {
-			ok: false,
-			error: "Usage: /cmcv -c <branch> [--from <ref>] [note]",
-		};
+		return { ok: false, error: usage };
 	}
 
 	return {
@@ -57,36 +65,47 @@ export function parseWorktreeArgs(args: string): {
 	};
 }
 
+export function extractCurrentTaskFromEntries(entries: unknown[]): string | undefined {
+	const controlRe = /^(yes|no|ok|sure|thanks|done|cancel|stop)$/i;
+	for (let i = entries.length - 1; i >= 0; i--) {
+		const entry = entries[i];
+		if (!entry || typeof entry !== "object") continue;
+		const e = entry as Record<string, unknown>;
+		if (e.type !== "message") continue;
+		const message = e.message;
+		if (!message || typeof message !== "object") continue;
+		const m = message as Record<string, unknown>;
+		if (m.role !== "user") continue;
+
+		let text: string | undefined;
+		if (typeof m.content === "string") {
+			text = m.content;
+		} else if (Array.isArray(m.content)) {
+			const parts: string[] = [];
+			for (const item of m.content) {
+				if (!item || typeof item !== "object") continue;
+				const t = item as Record<string, unknown>;
+				if (t.type === "text" && typeof t.text === "string") {
+					parts.push(t.text);
+				}
+			}
+			text = parts.join("\n");
+		}
+
+		if (!text) continue;
+		const trimmed = text.trim();
+		if (trimmed.length < 10) continue;
+		if (controlRe.test(trimmed)) continue;
+		return trimmed;
+	}
+	return undefined;
+}
+
 function extractCurrentTask(ctx: ExtensionCommandContext): string | undefined {
 	const sm = ctx.sessionManager;
 	if (!sm) return undefined;
 	try {
-		const branch = sm.getBranch();
-		if (!Array.isArray(branch)) return undefined;
-		// Walk backwards to find the most recent user message that looks like a task
-		for (let i = branch.length - 1; i >= 0; i--) {
-			const entry = branch[i] as unknown as Record<string, unknown> | undefined;
-			if (!entry) continue;
-			const role =
-				typeof entry.role === "string"
-					? entry.role
-					: (entry as { source?: string }).source;
-			if (role !== "user") continue;
-			const text =
-				typeof entry.text === "string"
-					? entry.text
-					: typeof entry.content === "string"
-						? entry.content
-						: undefined;
-			if (!text) continue;
-			const trimmed = text.trim();
-			// Skip very short replies and obvious control messages
-			if (trimmed.length < 10) continue;
-			if (/^(yes|no|ok|sure|thanks|done|cancel|stop)$/i.test(trimmed)) {
-				continue;
-			}
-			return trimmed;
-		}
+		return extractCurrentTaskFromEntries(sm.getBranch() as unknown[]);
 	} catch {
 		// sessionManager API may differ at runtime; fail gracefully
 	}

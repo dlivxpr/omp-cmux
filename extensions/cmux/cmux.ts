@@ -19,8 +19,8 @@ interface CallerInfo {
 	surfaceRef: string;
 }
 
-interface CmuxPaneInfo {
-	ref: string;
+export interface CmuxPaneInfo {
+	ref?: string;
 	surface_ref?: string;
 	surfaces?: CmuxPaneInfo[];
 }
@@ -41,25 +41,78 @@ export async function cmux(
 }
 
 // ---------------------------------------------------------------------------
+// Command result handling
+// ---------------------------------------------------------------------------
+type CmuxCommandResult =
+	| { ok: true; result: ExecResult }
+	| { ok: false; error: string };
+
+function truncateDetail(value: string, max = 200): string {
+	if (value.length <= max) return value;
+	return `${value.slice(0, max)}...`;
+}
+
+function formatCmuxFailure(
+	action: string,
+	result?: ExecResult,
+	caught?: unknown,
+): string {
+	let detail: string;
+	if (caught instanceof Error) {
+		detail = caught.message;
+	} else if (caught !== undefined) {
+		detail = String(caught);
+	} else if ((result as { killed?: boolean } | undefined)?.killed) {
+		detail = `timed out after ${CMUX_TIMEOUT_MS}ms`;
+	} else if (result?.stderr.trim()) {
+		detail = result.stderr.trim();
+	} else if (result?.stdout.trim()) {
+		detail = result.stdout.trim();
+	} else if (result && result.code !== 0) {
+		detail = `exit code ${result.code}`;
+	} else {
+		detail = "unknown error";
+	}
+	return `${action} failed: ${truncateDetail(detail)}`;
+}
+
+async function runCmuxCommand(
+	pi: ExtensionAPI,
+	args: string[],
+	action: string,
+): Promise<CmuxCommandResult> {
+	if (!isCmuxAvailable()) {
+		return {
+			ok: false,
+			error: formatCmuxFailure(
+				action,
+				undefined,
+				new Error("cmux is not available"),
+			),
+		};
+	}
+	try {
+		const result = await pi.exec("cmux", args, { timeout: CMUX_TIMEOUT_MS });
+		if (result.code !== 0) {
+			return { ok: false, error: formatCmuxFailure(action, result) };
+		}
+		return { ok: true, result };
+	} catch (err) {
+		return { ok: false, error: formatCmuxFailure(action, undefined, err) };
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Surface lifecycle management
 // ---------------------------------------------------------------------------
 
 export async function getCallerInfo(
 	pi: ExtensionAPI,
 ): Promise<{ ok: true; info: CallerInfo } | { ok: false; error: string }> {
-	if (!isCmuxAvailable()) {
-		return { ok: false, error: "cmux is not available" };
-	}
-	const result = await pi.exec(
-		"cmux",
-		["--json", "identify"],
-		{ timeout: CMUX_TIMEOUT_MS },
-	);
-	if (result.code !== 0) {
-		return { ok: false, error: "Failed to identify cmux caller" };
-	}
+	const run = await runCmuxCommand(pi, ["--json", "identify"], "Identify cmux caller");
+	if (!run.ok) return { ok: false, error: run.error };
 	try {
-		const parsed = JSON.parse(result.stdout);
+		const parsed = JSON.parse(run.result.stdout);
 		const workspaceRef = parsed.caller?.workspace_ref as string | undefined;
 		const surfaceRef = parsed.caller?.surface_ref as string | undefined;
 		if (!workspaceRef || !surfaceRef) {
@@ -77,18 +130,18 @@ export async function getCallerInfo(
 export async function listPanes(
 	pi: ExtensionAPI,
 	workspaceRef: string,
-): Promise<CmuxPaneInfo[]> {
-	const result = await pi.exec(
-		"cmux",
+): Promise<{ ok: true; panes: CmuxPaneInfo[] } | { ok: false; error: string }> {
+	const run = await runCmuxCommand(
+		pi,
 		["--json", "list-panes", "--workspace", workspaceRef],
-		{ timeout: CMUX_TIMEOUT_MS },
+		"List cmux panes",
 	);
-	if (result.code !== 0) return [];
+	if (!run.ok) return { ok: false, error: run.error };
 	try {
-		const parsed = JSON.parse(result.stdout);
-		return Array.isArray(parsed.panes) ? parsed.panes : [];
+		const parsed = JSON.parse(run.result.stdout);
+		return { ok: true, panes: Array.isArray(parsed.panes) ? parsed.panes : [] };
 	} catch {
-		return [];
+		return { ok: false, error: "Invalid JSON from cmux list-panes" };
 	}
 }
 
@@ -101,6 +154,61 @@ function collectSurfaceRefs(panes: CmuxPaneInfo[]): string[] {
 	return refs;
 }
 
+const SURFACE_REF_KEYS = [
+	"surface_ref",
+	"surfaceRef",
+	"new_surface_ref",
+	"newSurfaceRef",
+	"target_surface_ref",
+	"targetSurfaceRef",
+];
+
+function findSurfaceRef(value: unknown): string | undefined {
+	if (typeof value !== "object" || value === null) return undefined;
+	if (Array.isArray(value)) {
+		for (const item of value) {
+			const found = findSurfaceRef(item);
+			if (found) return found;
+		}
+		return undefined;
+	}
+	for (const key of SURFACE_REF_KEYS) {
+		if (key in value) {
+			const candidate = (value as Record<string, unknown>)[key];
+			if (typeof candidate === "string" && candidate.length > 0) {
+				return candidate;
+			}
+		}
+	}
+	for (const child of Object.values(value)) {
+		const found = findSurfaceRef(child);
+		if (found) return found;
+	}
+	return undefined;
+}
+
+export function parseSurfaceRefFromJson(stdout: string): string | undefined {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(stdout);
+	} catch {
+		return undefined;
+	}
+	return findSurfaceRef(parsed);
+}
+
+export function findNewSurfaceRefs(
+	previousPanes: CmuxPaneInfo[],
+	currentPanes: CmuxPaneInfo[],
+): string[] {
+	const previousRefs = new Set(collectSurfaceRefs(previousPanes));
+	const newRefs: string[] = [];
+	for (const ref of collectSurfaceRefs(currentPanes)) {
+		if (!previousRefs.has(ref)) newRefs.push(ref);
+	}
+	return newRefs;
+}
+
 function delay(ms: number): Promise<void> {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -109,17 +217,22 @@ export async function waitForNewSurface(
 	pi: ExtensionAPI,
 	workspaceRef: string,
 	previousPanes: CmuxPaneInfo[],
-): Promise<string | undefined> {
-	const previousRefs = new Set(collectSurfaceRefs(previousPanes));
+): Promise<{ ok: true; surfaceRef: string } | { ok: false; error: string }> {
 	for (let i = 0; i < SPLIT_READY_ATTEMPTS; i++) {
 		await delay(SPLIT_READY_DELAY_MS);
 		const current = await listPanes(pi, workspaceRef);
-		const currentRefs = collectSurfaceRefs(current);
-		for (const ref of currentRefs) {
-			if (!previousRefs.has(ref)) return ref;
+		if (!current.ok) return { ok: false, error: current.error };
+		const newRefs = findNewSurfaceRefs(previousPanes, current.panes);
+		if (newRefs.length === 1) return { ok: true, surfaceRef: newRefs[0] };
+		if (newRefs.length > 1) {
+			return {
+				ok: false,
+				error:
+					"Multiple new cmux surfaces appeared; refusing to choose a target",
+			};
 		}
 	}
-	return undefined;
+	return { ok: false, error: "New surface did not appear in time" };
 }
 
 export async function openCommandInNewSplit(
@@ -132,38 +245,53 @@ export async function openCommandInNewSplit(
 
 	const { workspaceRef, surfaceRef } = caller.info;
 
-	const previousPanes = await listPanes(pi, workspaceRef);
+	const previousList = await listPanes(pi, workspaceRef);
+	if (!previousList.ok) return { ok: false, error: previousList.error };
+	const previousPanes = previousList.panes;
 
-	const splitResult = await pi.exec("cmux", [
-		"new-split",
-		direction,
-		"--workspace",
-		workspaceRef,
-		"--surface",
-		surfaceRef,
-	]);
-	if (splitResult.code !== 0) {
-		return { ok: false, error: "Failed to create new split" };
-	}
+	const splitResult = await runCmuxCommand(
+		pi,
+		["--json", "new-split", direction, "--workspace", workspaceRef, "--surface", surfaceRef],
+		"Create cmux split",
+	);
+	if (!splitResult.ok) return { ok: false, error: splitResult.error };
 
-	const newSurfaceRef = await waitForNewSurface(pi, workspaceRef, previousPanes);
+	let newSurfaceRef = parseSurfaceRefFromJson(splitResult.result.stdout);
 	if (!newSurfaceRef) {
-		return { ok: false, error: "New surface did not appear in time" };
+		const waitResult = await waitForNewSurface(pi, workspaceRef, previousPanes);
+		if (!waitResult.ok) return { ok: false, error: waitResult.error };
+		newSurfaceRef = waitResult.surfaceRef;
 	}
 
 	await delay(SURFACE_BOOT_DELAY_MS);
 
-	const respawnResult = await pi.exec("cmux", [
-		"respawn-pane",
-		"--workspace",
-		workspaceRef,
-		"--surface",
-		newSurfaceRef,
-		"--command",
-		command,
-	]);
-	if (respawnResult.code !== 0) {
-		return { ok: false, error: "Failed to respawn pane with command" };
+	const respawnResult = await runCmuxCommand(
+		pi,
+		[
+			"respawn-pane",
+			"--workspace",
+			workspaceRef,
+			"--surface",
+			newSurfaceRef,
+			"--command",
+			command,
+		],
+		"Respawn cmux pane",
+	);
+	if (!respawnResult.ok) {
+		const respawnError = respawnResult.error;
+		const cleanupResult = await runCmuxCommand(
+			pi,
+			["close-surface", "--workspace", workspaceRef, "--surface", newSurfaceRef],
+			"Cleanup cmux split",
+		);
+		if (!cleanupResult.ok) {
+			return {
+				ok: false,
+				error: `${respawnError}; cleanup failed: ${cleanupResult.error}`,
+			};
+		}
+		return { ok: false, error: respawnError };
 	}
 
 	return { ok: true };

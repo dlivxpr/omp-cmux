@@ -36,9 +36,7 @@ export async function setSidebarState(
 }
 
 export async function clearSidebar(pi: ExtensionAPI): Promise<void> {
-	for (const key of STATUS_KEYS) {
-		await cmux(pi, "clear-status", key);
-	}
+	await Promise.all(STATUS_KEYS.map((key) => cmux(pi, "clear-status", key)));
 }
 
 export async function safeSetSidebarState(
@@ -97,6 +95,7 @@ function shortModel(id: string): string {
 // ---------------------------------------------------------------------------
 export function registerSidebarHandlers(pi: ExtensionAPI): void {
 	let sessionCost = 0;
+	const activeTools = new Map<string, string>();
 
 	function run(...args: string[]) {
 		cmux(pi, ...args).catch(() => {});
@@ -114,9 +113,7 @@ export function registerSidebarHandlers(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return;
 		sessionCost = 0;
 
-		for (const key of STATUS_KEYS) {
-			clearStatus(key);
-		}
+		void safeClearSidebar(pi);
 
 		setStatus("omp_state", "Idle", "checkmark.circle", GREEN);
 
@@ -194,18 +191,25 @@ export function registerSidebarHandlers(pi: ExtensionAPI): void {
 
 	pi.on("tool_execution_start", async (event: ToolExecutionStartEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
+		activeTools.set(event.toolCallId, event.toolName);
 		setStatus("omp_tool", event.toolName, "wrench", GRAY);
 	});
 
-	pi.on("tool_execution_end", async (_event: ToolExecutionEndEvent, ctx: ExtensionContext) => {
+	pi.on("tool_execution_end", async (event: ToolExecutionEndEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		clearStatus("omp_tool");
+		activeTools.delete(event.toolCallId);
+		if (activeTools.size > 0) {
+			const lastTool = Array.from(activeTools.values()).pop();
+			if (lastTool) {
+				setStatus("omp_tool", lastTool, "wrench", GRAY);
+			}
+		} else {
+			clearStatus("omp_tool");
+		}
 	});
 
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		for (const key of STATUS_KEYS) {
-			clearStatus(key);
-		}
+		await safeClearSidebar(pi);
 	});
 }

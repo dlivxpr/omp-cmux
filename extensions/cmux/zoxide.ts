@@ -27,12 +27,17 @@ export async function resolveDirectoryCandidate(
 	return undefined;
 }
 
+
+export function splitZoxideQuery(query: string): string[] {
+	return query.trim() ? query.trim().split(/\s+/) : [];
+}
+
 export async function getZoxideMatches(
 	pi: ExtensionAPI,
 	prefix: string,
 ): Promise<string[]> {
-	if (!prefix.trim()) return [];
-	const keywords = prefix.trim().split(/\s+/);
+	const keywords = splitZoxideQuery(prefix);
+	if (keywords.length === 0) return [];
 	try {
 		const result = await pi.exec(
 			"zoxide",
@@ -60,13 +65,25 @@ export async function resolveZoxideTarget(
 	if (direct) return { ok: true, path: direct };
 
 	// 2. Try zoxide query
+	const keywords = splitZoxideQuery(query);
+	if (keywords.length === 0) {
+		return { ok: false, error: `Could not resolve path: ${query}` };
+	}
 	try {
-		const result = await pi.exec("zoxide", ["query", query], {
+		const result = await pi.exec("zoxide", ["query", ...keywords], {
 			timeout: 5000,
 		});
 		if (result.code === 0) {
-			const path = result.stdout.trim();
+			const candidate = result.stdout.trim();
+			if (!candidate) {
+				return { ok: false, error: `Could not resolve path: ${query}` };
+			}
+			const path = await resolveDirectoryCandidate(candidate, baseDir);
 			if (path) return { ok: true, path };
+			return {
+				ok: false,
+				error: `Resolved zoxide path is not a directory: ${candidate}`,
+			};
 		}
 	} catch {
 		// zoxide failed
@@ -74,3 +91,4 @@ export async function resolveZoxideTarget(
 
 	return { ok: false, error: `Could not resolve path: ${query}` };
 }
+

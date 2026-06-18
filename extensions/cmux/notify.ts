@@ -2,9 +2,9 @@ import type { AgentMessage } from "@oh-my-pi/pi-agent-core";
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type {
 	ExtensionAPI,
+	ExtensionContext,
 	AgentEndEvent,
 	ToolResultEvent,
-	InputEvent,
 	SessionShutdownEvent,
 	AgentStartEvent,
 } from "@oh-my-pi/pi-coding-agent";
@@ -262,12 +262,14 @@ export function registerNotifyHandlers(
 	pi: ExtensionAPI,
 	tracker: NotifyTracker,
 ): void {
-	pi.on("agent_start", async (_event: AgentStartEvent) => {
+	pi.on("agent_start", async (_event: AgentStartEvent, ctx: ExtensionContext) => {
+		if (!ctx.hasUI) return;
 		tracker.reset();
 		cmuxUnavailable = false;
 	});
 
-	pi.on("tool_result", async (event: ToolResultEvent) => {
+	pi.on("tool_result", async (event: ToolResultEvent, _ctx: ExtensionContext) => {
+		if (!_ctx.hasUI) return;
 		if (event.isError) {
 			if (!tracker.state.firstToolError) {
 			const text = event.content
@@ -293,7 +295,8 @@ export function registerNotifyHandlers(
 		}
 	});
 
-	pi.on("agent_end", async (event: AgentEndEvent) => {
+	pi.on("agent_end", async (event: AgentEndEvent, ctx: ExtensionContext) => {
+		if (!ctx.hasUI) return;
 		const status = getAgentEndStatus(event.messages);
 		if (status === "error" && !tracker.state.firstToolError) {
 			const msg = getErrorMessage(event.messages);
@@ -302,16 +305,19 @@ export function registerNotifyHandlers(
 		const durationMs = Date.now() - tracker.state.startedAt;
 		const summary = generateSummary(tracker.state, durationMs, status);
 		await safeSendNotification(pi, summary.title, summary.subtitle, summary.body);
-	});
 
-	pi.on("input", async (_event: InputEvent) => {
-		const thresholdMs = getNumberFromEnv("PI_CMUX_NOTIFY_THRESHOLD_MS", 15000);
-		const elapsed = Date.now() - tracker.state.startedAt;
-		if (elapsed < thresholdMs) return;
-		await safeSendNotification(pi, "Waiting", "Ready for input", "");
+		if (status === "success") {
+			const thresholdMs = getNumberFromEnv("PI_CMUX_NOTIFY_THRESHOLD_MS", 15000);
+			if (durationMs >= thresholdMs) {
+				await safeSendNotification(pi, "Waiting", "Ready for input", "");
+			}
+		}
 	});
 
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent) => {
 		tracker.reset();
+		cmuxUnavailable = false;
+		lastNotificationKey = "";
+		lastNotificationAt = 0;
 	});
 }

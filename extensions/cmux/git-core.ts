@@ -110,11 +110,21 @@ export function parseWorktreeList(text: string): WorktreeEntry[] {
 	return entries;
 }
 
+function fnv1a32(input: string): string {
+	let hash = 0x811c9dc5;
+	for (let i = 0; i < input.length; i++) {
+		hash ^= input.charCodeAt(i);
+		hash = Math.imul(hash, 0x01000193);
+	}
+	return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
 export function slugifyBranchName(branch: string): string {
-	return branch
+	const sanitized = branch
 		.replace(/[^a-zA-Z0-9_\-\/]+/g, "-")
 		.replace(/-+/g, "-")
 		.replace(/^-|-$/g, "");
+	return `${sanitized || "branch"}-${fnv1a32(branch)}`;
 }
 
 export async function resolveWorktreePath(
@@ -134,11 +144,11 @@ export async function resolveWorktreePath(
 		}
 	}
 
-	const { dirname, basename } = await import("node:path");
+	const { dirname, basename, join } = await import("node:path");
 	const parent = dirname(repoRoot);
 	const repoName = basename(repoRoot);
 	const slug = slugifyBranchName(branch);
-	const worktreeDir = `${parent}/${repoName}-worktrees/${slug}`;
+	const worktreeDir = join(parent, `${repoName}-worktrees`, slug);
 
 	// If the path exists but isn't a worktree, return an error
 	try {
@@ -157,12 +167,44 @@ export async function resolveWorktreePath(
 	return { ok: true, path: worktreeDir };
 }
 
+export async function validateBranchName(
+	pi: ExtensionAPI,
+	repoRoot: string,
+	branch: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+	const result = await execGit(pi, repoRoot, ["check-ref-format", "--branch", branch]);
+	if (!result.ok) {
+		return { ok: false, error: `Invalid branch name '${branch}'` };
+	}
+	return { ok: true };
+}
+
+export async function validateCommitRef(
+	pi: ExtensionAPI,
+	repoRoot: string,
+	ref: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+	const result = await execGit(pi, repoRoot, ["rev-parse", "--verify", `${ref}^{commit}`]);
+	if (!result.ok) {
+		return { ok: false, error: `Ref '${ref}' does not resolve to a commit` };
+	}
+	return { ok: true };
+}
+
 export async function ensureCreatedBranchWorktree(
 	pi: ExtensionAPI,
 	repoRoot: string,
 	branch: string,
 	fromRef?: string,
 ): Promise<{ ok: true; path: string } | { ok: false; error: string }> {
+	const branchValidation = await validateBranchName(pi, repoRoot, branch);
+	if (!branchValidation.ok) return branchValidation;
+
+	if (fromRef) {
+		const refValidation = await validateCommitRef(pi, repoRoot, fromRef);
+		if (!refValidation.ok) return refValidation;
+	}
+
 	const exists = await branchExists(pi, repoRoot, branch);
 	if (exists) {
 		return {

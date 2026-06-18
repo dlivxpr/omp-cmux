@@ -62,7 +62,7 @@ All settings via environment variables:
 | Variable | Values | Default | Description |
 |---|---|---|---|
 | `OMP_CMUX_NOTIFY_LEVEL` | `all`, `medium`, `low`, `disabled` | `medium` | Notification verbosity |
-| `PI_CMUX_NOTIFY_THRESHOLD_MS` | milliseconds | `15000` | Delay before "Waiting for input" notification |
+| `PI_CMUX_NOTIFY_THRESHOLD_MS` | milliseconds | `15000` | Minimum run duration before the optional "Ready for input" notification |
 | `PI_CMUX_NOTIFY_DEBOUNCE_MS` | milliseconds | `3000` | Minimum interval between duplicate notifications |
 
 ### Notification Levels

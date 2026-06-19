@@ -4,6 +4,8 @@ import type {
 	AgentStartEvent,
 	ExtensionAPI,
 	ExtensionContext,
+	SessionShutdownEvent,
+	SessionStartEvent,
 	ToolResultEvent,
 } from "@oh-my-pi/pi-coding-agent";
 import { createNotifyTracker, registerNotifyHandlers } from "./notify";
@@ -149,5 +151,50 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 		expect(execCalls[0].tool).toBe("cmux");
 		expect(execCalls[0].args[0]).toBe("notify");
 		expect(tracker.state.readFiles.has("README.md")).toBe(true);
+	});
+
+	it("clears notifications on session_shutdown", async () => {
+		const { pi, handlers, execCalls } = createMockPI();
+		const tracker = createNotifyTracker();
+		registerNotifyHandlers(pi, tracker);
+
+		await handlers.session_shutdown!(
+			{ type: "session_shutdown" } as SessionShutdownEvent,
+			createMockContext(true),
+		);
+
+		expect(execCalls.length).toBe(1);
+		expect(execCalls[0].tool).toBe("cmux");
+		expect(execCalls[0].args[0]).toBe("clear-notifications");
+	});
+
+	it("clears notifications on session_start when hasUI=true", async () => {
+		const { pi, handlers, execCalls } = createMockPI();
+		const tracker = createNotifyTracker();
+		registerNotifyHandlers(pi, tracker);
+
+		const parentCtx = createMockContext(true);
+		await handlers.session_start!(
+			{ type: "session_start" } as SessionStartEvent,
+			parentCtx,
+		);
+
+		expect(execCalls.length).toBe(1);
+		expect(execCalls[0].tool).toBe("cmux");
+		expect(execCalls[0].args[0]).toBe("clear-notifications");
+	});
+
+	it("ignores session_start when hasUI=false (child agent)", async () => {
+		const { pi, handlers, execCalls } = createMockPI();
+		const tracker = createNotifyTracker();
+		registerNotifyHandlers(pi, tracker);
+
+		const childCtx = createMockContext(false);
+		await handlers.session_start!(
+			{ type: "session_start" } as SessionStartEvent,
+			childCtx,
+		);
+
+		expect(execCalls.length).toBe(0);
 	});
 });

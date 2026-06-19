@@ -7,6 +7,7 @@ import type {
 	ToolResultEvent,
 	SessionShutdownEvent,
 	AgentStartEvent,
+	SessionStartEvent,
 } from "@oh-my-pi/pi-coding-agent";
 import { cmux } from "./cmux";
 import { getNotifyLevel, shouldNotify, getNumberFromEnv } from "./config";
@@ -235,6 +236,14 @@ export async function safeSendNotification(
 	}
 }
 
+async function safeClearNotifications(pi: ExtensionAPI): Promise<void> {
+	try {
+		await cmux(pi, "clear-notifications");
+	} catch {
+		// Best-effort: never let notification failures affect the main flow
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Tracker & handlers
 // ---------------------------------------------------------------------------
@@ -314,10 +323,16 @@ export function registerNotifyHandlers(
 		}
 	});
 
+	pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
+		if (!ctx.hasUI) return;
+		await safeClearNotifications(pi);
+	});
+
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent) => {
 		tracker.reset();
 		cmuxUnavailable = false;
 		lastNotificationKey = "";
 		lastNotificationAt = 0;
+		await safeClearNotifications(pi);
 	});
 }

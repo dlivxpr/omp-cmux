@@ -113,7 +113,8 @@ export function registerSidebarHandlers(pi: ExtensionAPI): void {
 		if (!ctx.hasUI) return;
 		sessionCost = 0;
 
-		void safeClearSidebar(pi);
+		await safeClearSidebar(pi);
+		activeTools.clear();
 
 		setStatus("omp_state", "Idle", "checkmark.circle", GREEN);
 
@@ -208,8 +209,7 @@ export function registerSidebarHandlers(pi: ExtensionAPI): void {
 		}
 	});
 
-	pi.on("session_shutdown", async (_event: SessionShutdownEvent, ctx: ExtensionContext) => {
-		if (!ctx.hasUI) return;
+	pi.on("session_shutdown", async (_event: SessionShutdownEvent, _ctx: ExtensionContext) => {
 		await safeClearSidebar(pi);
 	});
 }

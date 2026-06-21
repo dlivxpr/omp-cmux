@@ -29,6 +29,8 @@ cd ~/.omp/extensions/omp-cmux
 bun install
 ```
 
+该路径不会被原生自动发现；必须添加下面的 `extensions` 配置。若要使用原生自动发现，请放到 `~/.omp/agent/extensions/` 下。
+
 然后在 omp 配置文件（`~/.omp/agent/config.yml`）中添加：
 
 ```yaml

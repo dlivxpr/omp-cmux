@@ -7,6 +7,35 @@ import {
 import { resolveZoxideTarget, getZoxideMatches } from "./zoxide";
 import { parseWorktreeArgs, openWorktreeSplit } from "./worktree";
 
+type RegisterCommandOptions = Parameters<ExtensionAPI["registerCommand"]>[1];
+type RuntimeCompletionItem = { value: string; label: string };
+type AsyncArgumentCompletions = (
+	prefix: string,
+) => Promise<RuntimeCompletionItem[] | null>;
+type RuntimeCommandOptions = Omit<
+	RegisterCommandOptions,
+	"getArgumentCompletions"
+> & {
+	getArgumentCompletions?: AsyncArgumentCompletions;
+};
+
+// omp 16.0.2 ExtensionAPI types mark getArgumentCompletions as synchronous,
+// but the TUI SlashCommand runtime accepts Awaitable completions. Keep the
+// async zoxide query behind this helper so the contract mismatch is localized.
+function withRuntimeCompletions(
+	options: RuntimeCommandOptions,
+): RegisterCommandOptions {
+	return options as unknown as RegisterCommandOptions;
+}
+
+function zoxideCompletions(pi: ExtensionAPI): AsyncArgumentCompletions {
+	return async (prefix: string) => {
+		const matches = await getZoxideMatches(pi, prefix);
+		if (matches.length === 0) return null;
+		return matches.map((m) => ({ value: m, label: m }));
+	};
+}
+
 export function registerCommands(pi: ExtensionAPI): void {
 	pi.registerCommand("cmv", {
 		description: "Open new pi session in right split",
@@ -54,14 +83,9 @@ export function registerCommands(pi: ExtensionAPI): void {
 		},
 	});
 
-	pi.registerCommand("cmz", {
+	pi.registerCommand("cmz", withRuntimeCompletions({
 		description: "Open pi session in zoxide directory (right split)",
-		// @ts-expect-error: runtime handles async autocomplete despite sync API type
-		getArgumentCompletions: async (prefix: string) => {
-			const matches = await getZoxideMatches(pi, prefix);
-			if (matches.length === 0) return null;
-			return matches.map((m) => ({ value: m, label: m }));
-		},
+		getArgumentCompletions: zoxideCompletions(pi),
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			if (!args.trim()) {
 				ctx.ui.notify("Usage: /cmz <query>", "warning");
@@ -76,16 +100,11 @@ export function registerCommands(pi: ExtensionAPI): void {
 			const result = await openCommandInNewSplit(pi, "right", cmd);
 			if (!result.ok) ctx.ui.notify(result.error, "error");
 		},
-	});
+	}));
 
-	pi.registerCommand("cmzh", {
+	pi.registerCommand("cmzh", withRuntimeCompletions({
 		description: "Open pi session in zoxide directory (bottom split)",
-		// @ts-expect-error: runtime handles async autocomplete despite sync API type
-		getArgumentCompletions: async (prefix: string) => {
-			const matches = await getZoxideMatches(pi, prefix);
-			if (matches.length === 0) return null;
-			return matches.map((m) => ({ value: m, label: m }));
-		},
+		getArgumentCompletions: zoxideCompletions(pi),
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			if (!args.trim()) {
 				ctx.ui.notify("Usage: /cmzh <query>", "warning");
@@ -100,17 +119,12 @@ export function registerCommands(pi: ExtensionAPI): void {
 			const result = await openCommandInNewSplit(pi, "down", cmd);
 			if (!result.ok) ctx.ui.notify(result.error, "error");
 		},
-	});
+	}));
 
 	// Aliases
-	pi.registerCommand("z", {
+	pi.registerCommand("z", withRuntimeCompletions({
 		description: "Alias for /cmz",
-		// @ts-expect-error: runtime handles async autocomplete despite sync API type
-		getArgumentCompletions: async (prefix: string) => {
-			const matches = await getZoxideMatches(pi, prefix);
-			if (matches.length === 0) return null;
-			return matches.map((m) => ({ value: m, label: m }));
-		},
+		getArgumentCompletions: zoxideCompletions(pi),
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			if (!args.trim()) {
 				ctx.ui.notify("Usage: /z <query>", "warning");
@@ -125,16 +139,11 @@ export function registerCommands(pi: ExtensionAPI): void {
 			const result = await openCommandInNewSplit(pi, "right", cmd);
 			if (!result.ok) ctx.ui.notify(result.error, "error");
 		},
-	});
+	}));
 
-	pi.registerCommand("zh", {
+	pi.registerCommand("zh", withRuntimeCompletions({
 		description: "Alias for /cmzh",
-		// @ts-expect-error: runtime handles async autocomplete despite sync API type
-		getArgumentCompletions: async (prefix: string) => {
-			const matches = await getZoxideMatches(pi, prefix);
-			if (matches.length === 0) return null;
-			return matches.map((m) => ({ value: m, label: m }));
-		},
+		getArgumentCompletions: zoxideCompletions(pi),
 		handler: async (args: string, ctx: ExtensionCommandContext) => {
 			if (!args.trim()) {
 				ctx.ui.notify("Usage: /zh <query>", "warning");
@@ -149,7 +158,7 @@ export function registerCommands(pi: ExtensionAPI): void {
 			const result = await openCommandInNewSplit(pi, "down", cmd);
 			if (!result.ok) ctx.ui.notify(result.error, "error");
 		},
-	});
+	}));
 
 	// Worktree commands
 	pi.registerCommand("cmcv", {

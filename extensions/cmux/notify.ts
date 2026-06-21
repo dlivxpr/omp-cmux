@@ -185,12 +185,12 @@ let cmuxUnavailable = false;
 let lastNotificationKey = "";
 let lastNotificationAt = 0;
 
-async function sendNotification(
+function sendNotification(
 	pi: ExtensionAPI,
 	title: string,
 	subtitle: string,
 	body: string,
-): Promise<void> {
+): void {
 	if (cmuxUnavailable) return;
 
 	const level = getNotifyLevel();
@@ -213,32 +213,37 @@ async function sendNotification(
 	if (subtitle) args.push("--subtitle", subtitle);
 	if (body) args.push("--body", body);
 
-	const result = await cmux(pi, ...args);
-	if (result && result.code !== 0) {
-		cmuxUnavailable = true;
-		return;
-	}
+	cmux(pi, ...args)
+		.then((result) => {
+			if (!result || result.code !== 0) {
+				cmuxUnavailable = true;
+				return;
+			}
 
-	lastNotificationKey = key;
-	lastNotificationAt = now;
+			lastNotificationKey = key;
+			lastNotificationAt = now;
+		})
+		.catch(() => {
+			cmuxUnavailable = true;
+		});
 }
 
-export async function safeSendNotification(
+export function safeSendNotification(
 	pi: ExtensionAPI,
 	title: string,
 	subtitle: string,
 	body: string,
-): Promise<void> {
+): void {
 	try {
-		await sendNotification(pi, title, subtitle, body);
+		sendNotification(pi, title, subtitle, body);
 	} catch {
 		// Best-effort: never let notification failures affect the main flow
 	}
 }
 
-async function safeClearNotifications(pi: ExtensionAPI): Promise<void> {
+function safeClearNotifications(pi: ExtensionAPI): void {
 	try {
-		await cmux(pi, "clear-notifications");
+		cmux(pi, "clear-notifications").catch(() => {});
 	} catch {
 		// Best-effort: never let notification failures affect the main flow
 	}
@@ -313,19 +318,19 @@ export function registerNotifyHandlers(
 		}
 		const durationMs = Date.now() - tracker.state.startedAt;
 		const summary = generateSummary(tracker.state, durationMs, status);
-		await safeSendNotification(pi, summary.title, summary.subtitle, summary.body);
+		safeSendNotification(pi, summary.title, summary.subtitle, summary.body);
 
 		if (status === "success") {
 			const thresholdMs = getNumberFromEnv("PI_CMUX_NOTIFY_THRESHOLD_MS", 15000);
 			if (durationMs >= thresholdMs) {
-				await safeSendNotification(pi, "Waiting", "Ready for input", "");
+				safeSendNotification(pi, "Waiting", "Ready for input", "");
 			}
 		}
 	});
 
 	pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		await safeClearNotifications(pi);
+		safeClearNotifications(pi);
 	});
 
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent) => {
@@ -333,6 +338,6 @@ export function registerNotifyHandlers(
 		cmuxUnavailable = false;
 		lastNotificationKey = "";
 		lastNotificationAt = 0;
-		await safeClearNotifications(pi);
+		safeClearNotifications(pi);
 	});
 }

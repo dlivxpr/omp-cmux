@@ -29,6 +29,8 @@ cd ~/.omp/extensions/omp-cmux
 bun install
 ```
 
+This path is not auto-discovered; the config stanza below is required. For native auto-discovery, place the package under `~/.omp/agent/extensions/` instead.
+
 Then add to your omp config (`~/.omp/agent/config.yml`):
 
 ```yaml

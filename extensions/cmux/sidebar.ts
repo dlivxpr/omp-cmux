@@ -39,20 +39,20 @@ export async function clearSidebar(pi: ExtensionAPI): Promise<void> {
 	await Promise.all(STATUS_KEYS.map((key) => cmux(pi, "clear-status", key)));
 }
 
-export async function safeSetSidebarState(
+export function safeSetSidebarState(
 	pi: ExtensionAPI,
 	updates: Partial<Record<StatusKey, string>>,
-): Promise<void> {
+): void {
 	try {
-		await setSidebarState(pi, updates);
+		setSidebarState(pi, updates).catch(() => {});
 	} catch {
 		// Best-effort: sidebar failures must not break the main flow
 	}
 }
 
-export async function safeClearSidebar(pi: ExtensionAPI): Promise<void> {
+export function safeClearSidebar(pi: ExtensionAPI): void {
 	try {
-		await clearSidebar(pi);
+		clearSidebar(pi).catch(() => {});
 	} catch {
 		// Best-effort
 	}
@@ -112,27 +112,35 @@ export function registerSidebarHandlers(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 		sessionCost = 0;
-
-		await safeClearSidebar(pi);
 		activeTools.clear();
 
-		setStatus("omp_state", "Idle", "checkmark.circle", GREEN);
-
-		if (ctx.model?.id) {
-			setStatus("omp_model", shortModel(ctx.model.id), "brain", PURPLE);
-		}
-
+		const modelId = ctx.model?.id;
 		const thinking = pi.getThinkingLevel();
-		if (thinking && thinking !== "off") {
-			setStatus("omp_thinking", thinking, "sparkles", AMBER);
-		} else if (thinking === "off") {
-			setStatus("omp_thinking", "off", "sparkles", GRAY);
-		}
-
 		const usage = ctx.getContextUsage();
-		if (usage && usage.tokens != null && usage.tokens > 0) {
-			setStatus("omp_tokens", formatTokens(usage.tokens), "number", BLUE);
-		}
+
+		void (async () => {
+			try {
+				await clearSidebar(pi);
+			} catch {
+				// Best-effort
+			}
+
+			setStatus("omp_state", "Idle", "checkmark.circle", GREEN);
+
+			if (modelId) {
+				setStatus("omp_model", shortModel(modelId), "brain", PURPLE);
+			}
+
+			if (thinking && thinking !== "off") {
+				setStatus("omp_thinking", thinking, "sparkles", AMBER);
+			} else if (thinking === "off") {
+				setStatus("omp_thinking", "off", "sparkles", GRAY);
+			}
+
+			if (usage && usage.tokens != null && usage.tokens > 0) {
+				setStatus("omp_tokens", formatTokens(usage.tokens), "number", BLUE);
+			}
+		})();
 	});
 
 	pi.on("before_agent_start", async (_event: BeforeAgentStartEvent, ctx: ExtensionContext) => {
@@ -210,6 +218,6 @@ export function registerSidebarHandlers(pi: ExtensionAPI): void {
 	});
 
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent, _ctx: ExtensionContext) => {
-		await safeClearSidebar(pi);
+		safeClearSidebar(pi);
 	});
 }

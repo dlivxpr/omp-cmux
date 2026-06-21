@@ -47,7 +47,7 @@ function createMockPI(): {
 		},
 		exec: async (tool: string, args: string[]) => {
 			execCalls.push({ tool, args });
-			return { stdout: "", stderr: "", exitCode: 0 };
+			return { stdout: "", stderr: "", code: 0 };
 		},
 	} as unknown as ExtensionAPI;
 	return { pi, handlers, execCalls };
@@ -151,6 +151,57 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 		expect(execCalls[0].tool).toBe("cmux");
 		expect(execCalls[0].args[0]).toBe("notify");
 		expect(tracker.state.readFiles.has("README.md")).toBe(true);
+	});
+
+	it("agent_end does not wait for a slow cmux notification", async () => {
+		const handlers: Record<string, Handler> = {};
+		let resolveExec!: (result: { stdout: string; stderr: string; code: number }) => void;
+		const pi = {
+			on: (event: string, handler: Handler) => {
+				handlers[event] = handler;
+			},
+			exec: mock(
+				() =>
+					new Promise<{ stdout: string; stderr: string; code: number }>(
+						(resolve) => {
+							resolveExec = resolve;
+						},
+					),
+			),
+		} as unknown as ExtensionAPI;
+		const tracker = createNotifyTracker();
+		tracker.state.changedFiles.add("slow-notification-test");
+		registerNotifyHandlers(pi, tracker);
+
+		const originalSocketPath = process.env.CMUX_SOCKET_PATH;
+		process.env.CMUX_SOCKET_PATH = "/tmp/test-cmux.sock";
+		try {
+			await handlers.agent_start!(
+				{ type: "agent_start" } as AgentStartEvent,
+				createMockContext(true),
+			);
+			tracker.state.changedFiles.add("slow-notification-test");
+
+			const handlerPromise = Promise.resolve(
+				handlers.agent_end!(
+					{
+						type: "agent_end",
+						messages: [{ role: "assistant", stopReason: "endTurn" }],
+					} as unknown as AgentEndEvent,
+					createMockContext(true),
+				),
+			);
+			const result = await Promise.race([
+				handlerPromise.then(() => "done"),
+				new Promise((resolve) => setTimeout(() => resolve("timeout"), 20)),
+			]);
+			resolveExec({ stdout: "", stderr: "", code: 0 });
+			await handlerPromise;
+
+			expect(result).toBe("done");
+		} finally {
+			process.env.CMUX_SOCKET_PATH = originalSocketPath;
+		}
 	});
 
 	it("clears notifications on session_shutdown", async () => {

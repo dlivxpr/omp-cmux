@@ -22,6 +22,8 @@ interface CallerInfo {
 export interface CmuxPaneInfo {
 	ref?: string;
 	surface_ref?: string;
+	selected_surface_ref?: string;
+	surface_refs?: string[];
 	surfaces?: CmuxPaneInfo[];
 }
 
@@ -149,6 +151,14 @@ function collectSurfaceRefs(panes: CmuxPaneInfo[]): string[] {
 	const refs: string[] = [];
 	for (const p of panes) {
 		if (p.surface_ref) refs.push(p.surface_ref);
+		if (p.selected_surface_ref) refs.push(p.selected_surface_ref);
+		if (p.surface_refs) {
+			refs.push(
+				...p.surface_refs.filter(
+					(ref): ref is string => typeof ref === "string" && ref.length > 0,
+				),
+			);
+		}
 		if (p.surfaces) refs.push(...collectSurfaceRefs(p.surfaces));
 	}
 	return refs;
@@ -204,7 +214,10 @@ export function findNewSurfaceRefs(
 	const previousRefs = new Set(collectSurfaceRefs(previousPanes));
 	const newRefs: string[] = [];
 	for (const ref of collectSurfaceRefs(currentPanes)) {
-		if (!previousRefs.has(ref)) newRefs.push(ref);
+		if (!previousRefs.has(ref)) {
+			newRefs.push(ref);
+			previousRefs.add(ref);
+		}
 	}
 	return newRefs;
 }
@@ -317,7 +330,7 @@ export function buildPiCommand(
 	const cwdArg = shellEscape(cwd);
 	let cmd = `${cd} && exec omp --cwd ${cwdArg}`;
 	if (options?.prompt) {
-		cmd += ` -p ${shellEscape(options.prompt)}`;
+		cmd += ` ${shellEscape(options.prompt)}`;
 	}
 	return cmd;
 }

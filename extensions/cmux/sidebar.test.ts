@@ -23,6 +23,10 @@ const MOCK_CWD = "/tmp";
 
 type Handler = (event: unknown, ctx: ExtensionContext) => Promise<void> | void;
 
+function flushAsyncWork(): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function createMockContext(
 	hasUI: boolean,
 	options?: {
@@ -92,7 +96,7 @@ describe("registerSidebarHandlers", () => {
 			{ type: "session_start" } as SessionStartEvent,
 			createMockContext(true),
 		);
-
+		await flushAsyncWork();
 		const clearCalls = execCalls.slice(0, STATUS_KEYS.length);
 		expect(clearCalls.map((call) => call.args)).toEqual(
 			STATUS_KEYS.map((key) => ["clear-status", key]),
@@ -105,6 +109,53 @@ describe("registerSidebarHandlers", () => {
 				call.args[2] === "Idle",
 		);
 		expect(stateCall).toBeDefined();
+	});
+
+	it("session_start sets defaults only after old status clears", async () => {
+		const handlers: Record<string, Handler> = {};
+		const execCalls: { tool: string; args: string[] }[] = [];
+		const clearResolvers: Array<
+			(result: { stdout: string; stderr: string; code: number }) => void
+		> = [];
+		const pi = {
+			on: (event: string, handler: Handler) => {
+				handlers[event] = handler;
+			},
+			exec: mock((tool: string, args: string[]) => {
+				execCalls.push({ tool, args });
+				if (args[0] === "clear-status") {
+					return new Promise<{ stdout: string; stderr: string; code: number }>(
+						(resolve) => {
+							clearResolvers.push(resolve);
+						},
+					);
+				}
+				return Promise.resolve({ stdout: "", stderr: "", code: 0 });
+			}),
+			getThinkingLevel: () => "medium" as const,
+		} as unknown as ExtensionAPI;
+		registerSidebarHandlers(pi);
+
+		await handlers.session_start!(
+			{ type: "session_start" } as SessionStartEvent,
+			createMockContext(true),
+		);
+
+		expect(execCalls.some((call) => call.args[0] === "set-status")).toBe(false);
+
+		for (const resolve of clearResolvers) {
+			resolve({ stdout: "", stderr: "", code: 0 });
+		}
+		await Promise.resolve();
+		await flushAsyncWork();
+		expect(
+			execCalls.some(
+				(call) =>
+					call.args[0] === "set-status" &&
+					call.args[1] === "omp_state" &&
+					call.args[2] === "Idle",
+			),
+		).toBe(true);
 	});
 
 	it("session_shutdown clears sidebar regardless of hasUI", async () => {
@@ -124,6 +175,43 @@ describe("registerSidebarHandlers", () => {
 				STATUS_KEYS.map((key) => ["clear-status", key]),
 			);
 		}
+	});
+
+	it("session_shutdown does not wait for slow cmux clears", async () => {
+		const handlers: Record<string, Handler> = {};
+		const resolvers: Array<(result: { stdout: string; stderr: string; code: number }) => void> = [];
+		const pi = {
+			on: (event: string, handler: Handler) => {
+				handlers[event] = handler;
+			},
+			exec: mock(
+				() =>
+					new Promise<{ stdout: string; stderr: string; code: number }>(
+						(resolve) => {
+							resolvers.push(resolve);
+						},
+					),
+			),
+			getThinkingLevel: () => "medium" as const,
+		} as unknown as ExtensionAPI;
+		registerSidebarHandlers(pi);
+
+		const handlerPromise = Promise.resolve(
+			handlers.session_shutdown!(
+				{ type: "session_shutdown" } as SessionShutdownEvent,
+				createMockContext(false),
+			),
+		);
+		const result = await Promise.race([
+			handlerPromise.then(() => "done"),
+			new Promise((resolve) => setTimeout(() => resolve("timeout"), 20)),
+		]);
+		for (const resolve of resolvers) {
+			resolve({ stdout: "", stderr: "", code: 0 });
+		}
+		await handlerPromise;
+
+		expect(result).toBe("done");
 	});
 
 	it("session_start clears activeTools", async () => {

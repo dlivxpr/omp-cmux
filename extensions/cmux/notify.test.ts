@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test";
 import type {
 	AgentEndEvent,
 	AgentStartEvent,
@@ -52,6 +52,28 @@ function createMockPI(): {
 	} as unknown as ExtensionAPI;
 	return { pi, handlers, execCalls };
 }
+
+let originalSocketPath: string | undefined;
+let originalBundledCliPath: string | undefined;
+let originalTmux: string | undefined;
+
+beforeEach(() => {
+	originalSocketPath = process.env.CMUX_SOCKET_PATH;
+	originalBundledCliPath = process.env.CMUX_BUNDLED_CLI_PATH;
+	originalTmux = process.env.TMUX;
+	process.env.CMUX_SOCKET_PATH = "/tmp/test-cmux.sock";
+	delete process.env.CMUX_BUNDLED_CLI_PATH;
+	delete process.env.TMUX;
+});
+
+afterEach(() => {
+	if (originalSocketPath === undefined) delete process.env.CMUX_SOCKET_PATH;
+	else process.env.CMUX_SOCKET_PATH = originalSocketPath;
+	if (originalBundledCliPath === undefined) delete process.env.CMUX_BUNDLED_CLI_PATH;
+	else process.env.CMUX_BUNDLED_CLI_PATH = originalBundledCliPath;
+	if (originalTmux === undefined) delete process.env.TMUX;
+	else process.env.TMUX = originalTmux;
+});
 
 describe("registerNotifyHandlers child-agent filtering", () => {
 	it("ignores agent_start, tool_result and agent_end when ctx.hasUI is false", async () => {

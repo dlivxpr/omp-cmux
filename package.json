@@ -1,9 +1,18 @@
 {
-  "private": true,
   "packageManager": "bun@1.3.14",
   "name": "omp-cmux",
   "version": "1.0.0",
   "description": "oh-my-pi cmux plugin — sidebar status, notifications, and split-pane workflow commands",
+  "license": "MIT",
+  "author": "dlivxpr",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dlivxpr/omp-cmux.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dlivxpr/omp-cmux/issues"
+  },
+  "homepage": "https://github.com/dlivxpr/omp-cmux#readme",
   "omp": {
     "extensions": ["./extensions/cmux/index.ts"]
   },

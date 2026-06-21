@@ -50,11 +50,13 @@ bun run typecheck    # tsc --noEmit
 
 # Install dependencies
 bun install          # uses bun@1.3.14, declared in package.json#packageManager
+
+# Run the Bun test suite
+bun test             # runs extensions/cmux/*.test.ts
 ```
 
 - **Package manager**: `bun` only. Never use npm, yarn, or pnpm.
 - **No build step**: The extension is loaded as raw TypeScript by the omp harness at runtime.
-- **No test suite** defined in scripts.
 
 ## Code Conventions & Common Patterns
 
@@ -63,6 +65,12 @@ bun install          # uses bun@1.3.14, declared in package.json#packageManager
 - **Decoupled modules** — each `.ts` file is a self-contained concern. Never consolidate into a single file.
 - **Imports are always absolute** within the extension scope, using `"@oh-my-pi/pi-coding-agent"` for the harness API.
 - No barrel files, no re-exports beyond what each module naturally exports.
+
+### Slash Command Completions
+
+- zoxide 命令（`/cmz`, `/cmzh`, `/z`, `/zh`）的补全是异步查询 `zoxide query` 得到的。
+- omp 16.0.2 的 `ExtensionAPI.registerCommand` 类型把 `getArgumentCompletions` 标为同步返回，但 TUI 运行时接受 `Awaitable`。
+- 使用 `withRuntimeCompletions()` 把异步补全函数局部包装回类型签名，避免在整个命令选项上扩散类型断言。
 
 ### Error Handling
 
@@ -126,8 +134,10 @@ Status keys are declared as a const array (`STATUS_KEYS`) with a derived union t
 
 ## Testing & QA
 
-- **No formal test suite** configured. The `typecheck` script (`tsc --noEmit`) is the only automated check.
+- Tests live in `extensions/cmux/*.test.ts` and run with **Bun** (`bun test`).
+- Current baseline: 5 test files, 33 passing assertions.
 - Type safety is enforced via `strict: true` in tsconfig and the typed stub layer in `types/oh-my-pi-stub.d.ts`.
+- The `typecheck` script (`tsc --noEmit`) is also run in CI/local checks.
 
 ## Slash Commands
 

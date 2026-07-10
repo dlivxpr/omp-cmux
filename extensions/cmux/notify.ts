@@ -55,6 +55,15 @@ function createRunState(): RunState {
 	};
 }
 
+function resetRunState(state: RunState): void {
+	state.startedAt = Date.now();
+	state.readFiles.clear();
+	state.changedFiles.clear();
+	state.searchCount = 0;
+	state.bashCount = 0;
+	state.firstToolError = undefined;
+}
+
 function extractTarget(toolName: string, input: Record<string, unknown>): string {
 	switch (toolName) {
 		case "edit":
@@ -81,15 +90,6 @@ function formatDuration(ms: number): string {
 	return `${seconds}s`;
 }
 
-function hashKey(subtitle: string, body: string): string {
-	// Simple hash for deduplication
-	let h = 0;
-	const str = subtitle + "\n" + body;
-	for (let i = 0; i < str.length; i++) {
-		h = ((h << 5) - h + str.charCodeAt(i)) | 0;
-	}
-	return String(h);
-}
 
 // ---------------------------------------------------------------------------
 // Summary generation (aligned with upstream)
@@ -195,61 +195,104 @@ function getErrorMessage(
 // ---------------------------------------------------------------------------
 // Notification sender with debounce & availability tracking
 // ---------------------------------------------------------------------------
-let cmuxUnavailable = false;
-let lastNotificationKey = "";
-let lastNotificationAt = 0;
+interface NotificationReservation {
+	sessionGeneration: number;
+	runGeneration: number;
+}
+
+interface NotificationDeliveryState {
+	cmuxUnavailable: boolean;
+	sessionGeneration: number;
+	runGeneration: number;
+	inFlightByKey: Map<string, NotificationReservation>;
+	deliveredAtByKey: Map<string, number>;
+	pendingSends: Set<Promise<void>>;
+}
 
 function sendNotification(
 	pi: ExtensionAPI,
+	state: NotificationDeliveryState,
 	title: string,
 	subtitle: string,
 	body: string,
 ): void {
-	if (cmuxUnavailable) return;
+	if (state.cmuxUnavailable) return;
 
 	const level = getNotifyLevel();
-	// Determine notify type from title for level filtering
 	let type: "waiting" | "complete" | "error" = "complete";
 	if (title === "Waiting") type = "waiting";
 	else if (title === "Error" || title === "Aborted") type = "error";
-
 	if (!shouldNotify(level, type)) return;
 
-	// Debounce
 	const debounceMs = getNumberFromEnv("PI_CMUX_NOTIFY_DEBOUNCE_MS", 3000);
-	const key = hashKey(subtitle, body);
-	const now = Date.now();
-	if (key === lastNotificationKey && now - lastNotificationAt < debounceMs) {
+	const key = JSON.stringify([title, subtitle, body]);
+	const lastDeliveredAt = state.deliveredAtByKey.get(key);
+	if (state.inFlightByKey.has(key)) return;
+	if (
+		lastDeliveredAt !== undefined &&
+		Date.now() - lastDeliveredAt < debounceMs
+	) {
 		return;
 	}
+
+	const reservation: NotificationReservation = {
+		sessionGeneration: state.sessionGeneration,
+		runGeneration: state.runGeneration,
+	};
+	state.inFlightByKey.set(key, reservation);
 
 	const args = ["notify", "--title", title];
 	if (subtitle) args.push("--subtitle", subtitle);
 	if (body) args.push("--body", body);
 
-	cmux(pi, ...args)
-		.then((result) => {
-			if (!result || result.code !== 0) {
-				cmuxUnavailable = true;
-				return;
-			}
+	let pending!: Promise<void>;
+	pending = cmux(pi, ...args)
+		.then(
+			(result) => {
+				if (!result || result.code !== 0) {
+					if (
+						state.sessionGeneration === reservation.sessionGeneration &&
+						state.runGeneration === reservation.runGeneration
+					) {
+						state.cmuxUnavailable = true;
+					}
+					return;
+				}
 
-			lastNotificationKey = key;
-			lastNotificationAt = now;
-		})
-		.catch(() => {
-			cmuxUnavailable = true;
+				if (
+					state.sessionGeneration === reservation.sessionGeneration &&
+					state.runGeneration === reservation.runGeneration
+				) {
+					state.deliveredAtByKey.set(key, Date.now());
+				}
+			},
+			() => {
+				if (
+					state.sessionGeneration === reservation.sessionGeneration &&
+					state.runGeneration === reservation.runGeneration
+				) {
+					state.cmuxUnavailable = true;
+				}
+			},
+		)
+		.finally(() => {
+			if (state.inFlightByKey.get(key) === reservation) {
+				state.inFlightByKey.delete(key);
+			}
+			state.pendingSends.delete(pending);
 		});
+	state.pendingSends.add(pending);
 }
 
-export function safeSendNotification(
+function safeSendNotification(
 	pi: ExtensionAPI,
+	state: NotificationDeliveryState,
 	title: string,
 	subtitle: string,
 	body: string,
 ): void {
 	try {
-		sendNotification(pi, title, subtitle, body);
+		sendNotification(pi, state, title, subtitle, body);
 	} catch {
 		// Best-effort: never let notification failures affect the main flow
 	}
@@ -263,95 +306,97 @@ function safeClearNotifications(pi: ExtensionAPI): void {
 	}
 }
 
+// Handlers
 // ---------------------------------------------------------------------------
-// Tracker & handlers
-// ---------------------------------------------------------------------------
-export interface NotifyTracker {
-	state: RunState;
-	reset(): void;
-}
 
-export function createNotifyTracker(): NotifyTracker {
-	const state = createRunState();
-	return {
-		state,
-		reset(): void {
-			state.startedAt = Date.now();
-			state.readFiles.clear();
-			state.changedFiles.clear();
-			state.searchCount = 0;
-			state.bashCount = 0;
-			state.firstToolError = undefined;
-		},
+export function registerNotifyHandlers(pi: ExtensionAPI): void {
+	const runState = createRunState();
+	const deliveryState: NotificationDeliveryState = {
+		cmuxUnavailable: false,
+		sessionGeneration: 0,
+		runGeneration: 0,
+		inFlightByKey: new Map(),
+		deliveredAtByKey: new Map(),
+		pendingSends: new Set(),
 	};
-}
-
-export function registerNotifyHandlers(
-	pi: ExtensionAPI,
-	tracker: NotifyTracker,
-): void {
 	pi.on("agent_start", async (_event: AgentStartEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		tracker.reset();
-		cmuxUnavailable = false;
+		resetRunState(runState);
+		deliveryState.runGeneration++;
+		deliveryState.cmuxUnavailable = false;
 	});
 
 	pi.on("tool_result", async (event: ToolResultEvent, _ctx: ExtensionContext) => {
 		if (!_ctx.hasUI) return;
 		if (event.isError) {
-			if (!tracker.state.firstToolError) {
+			if (!runState.firstToolError) {
 			const text = event.content
 				.filter((c): c is { type: "text"; text: string } => c.type === "text")
 				.map((c) => c.text)
 				.join(" ")
 				.slice(0, 200);
-				tracker.state.firstToolError = text || "Tool error";
+				runState.firstToolError = text || "Tool error";
 			}
 			return;
 		}
 
 		if (isReadToolResult(event)) {
 			const target = extractTarget(event.toolName, event.input);
-			if (target) tracker.state.readFiles.add(target);
+			if (target) runState.readFiles.add(target);
 		} else if (isEditToolResult(event) || isWriteToolResult(event)) {
 			const target = extractTarget(event.toolName, event.input);
-			if (target) tracker.state.changedFiles.add(target);
+			if (target) runState.changedFiles.add(target);
 		} else if (isSearchToolResult(event)) {
-			tracker.state.searchCount++;
+			runState.searchCount++;
 		} else if (isBashToolResult(event)) {
-			tracker.state.bashCount++;
+			runState.bashCount++;
 		}
 	});
 
 	pi.on("agent_end", async (event: AgentEndEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 		const status = getAgentEndStatus(event.messages);
-		if (status === "error" && !tracker.state.firstToolError) {
+		if (status === "error" && !runState.firstToolError) {
 			const msg = getErrorMessage(event.messages);
-			if (msg) tracker.state.firstToolError = msg;
+			if (msg) runState.firstToolError = msg;
 		}
-		const durationMs = Date.now() - tracker.state.startedAt;
-		const summary = generateSummary(tracker.state, durationMs, status);
-		safeSendNotification(pi, summary.title, summary.subtitle, summary.body);
+		const durationMs = Date.now() - runState.startedAt;
+		const summary = generateSummary(runState, durationMs, status);
+		safeSendNotification(pi, deliveryState, summary.title, summary.subtitle, summary.body);
 
 		if (status === "success") {
 			const thresholdMs = getNumberFromEnv("PI_CMUX_NOTIFY_THRESHOLD_MS", 15000);
 			if (durationMs >= thresholdMs) {
-				safeSendNotification(pi, "Waiting", "Ready for input", "");
+				safeSendNotification(pi, deliveryState, "Waiting", "Ready for input", "");
 			}
 		}
 	});
 
 	pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
+		resetRunState(runState);
+		deliveryState.sessionGeneration++;
+		deliveryState.runGeneration++;
+		deliveryState.cmuxUnavailable = false;
+		deliveryState.inFlightByKey.clear();
+		deliveryState.deliveredAtByKey.clear();
 		safeClearNotifications(pi);
 	});
 
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent) => {
-		tracker.reset();
-		cmuxUnavailable = false;
-		lastNotificationKey = "";
-		lastNotificationAt = 0;
+		const pendingAtShutdown = Array.from(deliveryState.pendingSends);
+		deliveryState.sessionGeneration++;
+		resetRunState(runState);
+		deliveryState.runGeneration++;
+		deliveryState.cmuxUnavailable = false;
+		deliveryState.inFlightByKey.clear();
+		deliveryState.deliveredAtByKey.clear();
 		safeClearNotifications(pi);
+
+		if (pendingAtShutdown.length > 0) {
+			void Promise.allSettled(pendingAtShutdown).then(() => {
+				safeClearNotifications(pi);
+			});
+		}
 	});
 }

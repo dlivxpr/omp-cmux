@@ -75,9 +75,9 @@ All config reads from `process.env` with sensible defaults:
 |---|---|---|
 | `CMUX_TIMEOUT_MS` | 5000 | cmux CLI call timeout |
 
-### Notification Tracker Pattern
+### Notification Lifecycle State Pattern
 
-`NotifyTracker` wraps a `RunState` object (read files, changed files, search/bash counts, errors) with a `reset()` method. Created once in `index.ts`, shared across event handlers. Tracks tool usage per agent run and generates a summary notification on `agent_end`.
+`registerNotifyHandlers()` privately owns both per-run summary state (read files, changed files, search/bash counts, errors) and per-extension delivery state (generations, failure circuit, in-flight payloads, debounce records). `agent_start` resets run state, `session_start` initializes delivery state, and `session_shutdown` invalidates pending generations and clears notifications. Tests drive registered lifecycle handlers and observe cmux commands; internal notification state is not part of the module interface.
 
 ### Sidebar Status Pattern
 

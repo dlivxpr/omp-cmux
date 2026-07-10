@@ -169,7 +169,7 @@ function getAgentEndStatus(
 		if (assistant.stopReason === "error") return "error";
 		if (
 			assistant.stopReason === "aborted" &&
-			isSilentAbort(assistant.errorMessage)
+			isSilentAbort(assistant)
 		)
 			return "plan_ready";
 		if (assistant.stopReason === "aborted") return "aborted";

@@ -163,3 +163,17 @@ Commands gracefully no-op when cmux is unavailable — `cmux()` and `openCommand
 3. **Summary generation mirrors upstream notification format** — `generateSummary()` produces title/subtitle/body tuples that align with omp's native notification contracts.
 4. **Worktree path convention** — worktrees go to `../<repo>-worktrees/<slugified-branch>/`, created via `git worktree add -b <branch>`.
 5. **Dynamic imports for Node path/fs modules** — `git-core.ts` uses `await import("node:path")` and `await import("node:fs/promises")` to avoid bundling issues in the omp harness.
+
+## Agent skills
+
+### Issue tracker
+
+Issues and PRDs are tracked in GitHub Issues; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Triage uses the canonical `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, and `wontfix` labels. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+This is a single-context repository. See `docs/agents/domain.md`.

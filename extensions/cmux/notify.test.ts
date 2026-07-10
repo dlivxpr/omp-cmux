@@ -271,3 +271,62 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 		expect(execCalls.length).toBe(0);
 	});
 });
+
+describe("registerNotifyHandlers summary notifications", () => {
+	it("reports silent plan aborts as plan ready", async () => {
+		const { pi, handlers, execCalls } = createMockPI();
+		const tracker = createNotifyTracker();
+		registerNotifyHandlers(pi, tracker);
+		const ctx = createMockContext(true);
+
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [
+					{
+						role: "assistant",
+						stopReason: "aborted",
+						errorMessage: "__omp.silent_abort__",
+					},
+				],
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+
+		expect(execCalls[0].tool).toBe("cmux");
+		expect(execCalls[0].args).toEqual([
+			"notify",
+			"--title",
+			"Plan Ready",
+			"--subtitle",
+			"Review the plan to apply or refine",
+		]);
+		expect(execCalls[0].args).not.toContain("Aborted");
+	});
+
+	it("still reports real aborts as aborted", async () => {
+		const { pi, handlers, execCalls } = createMockPI();
+		const tracker = createNotifyTracker();
+		registerNotifyHandlers(pi, tracker);
+		const ctx = createMockContext(true);
+
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [{ role: "assistant", stopReason: "aborted" }],
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+
+		expect(execCalls[0].tool).toBe("cmux");
+		expect(execCalls[0].args).toEqual([
+			"notify",
+			"--title",
+			"Aborted",
+			"--subtitle",
+			"Session was aborted",
+		]);
+	});
+});

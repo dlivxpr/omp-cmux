@@ -9,6 +9,7 @@ import type {
 	AgentStartEvent,
 	SessionStartEvent,
 } from "@oh-my-pi/pi-coding-agent";
+import { isSilentAbort } from "@oh-my-pi/pi-coding-agent";
 import { cmux } from "./cmux";
 import { getNotifyLevel, shouldNotify, getNumberFromEnv } from "./config";
 
@@ -96,8 +97,16 @@ function hashKey(subtitle: string, body: string): string {
 function generateSummary(
 	state: RunState,
 	durationMs: number,
-	status: "success" | "error" | "aborted",
+	status: "success" | "error" | "aborted" | "plan_ready",
 ): { title: string; subtitle: string; body: string } {
+	if (status === "plan_ready") {
+		return {
+			title: "Plan Ready",
+			subtitle: "Review the plan to apply or refine",
+			body: "",
+		};
+	}
+
 	if (status === "aborted") {
 		return { title: "Aborted", subtitle: "Session was aborted", body: "" };
 	}
@@ -153,11 +162,16 @@ function generateSummary(
 
 function getAgentEndStatus(
 	messages: AgentMessage[],
-): "success" | "error" | "aborted" {
+): "success" | "error" | "aborted" | "plan_ready" {
 	const lastMsg = messages[messages.length - 1];
 	if (lastMsg?.role === "assistant") {
 		const assistant = lastMsg as AssistantMessage;
 		if (assistant.stopReason === "error") return "error";
+		if (
+			assistant.stopReason === "aborted" &&
+			isSilentAbort(assistant.errorMessage)
+		)
+			return "plan_ready";
 		if (assistant.stopReason === "aborted") return "aborted";
 	}
 	return "success";

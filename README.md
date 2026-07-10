@@ -1,22 +1,17 @@
 # omp-cmux
 
-cmux integration extension for [oh-my-pi](https://github.com/oh-my-pi/oh-my-pi) — sidebar status, desktop notifications, zoxide-powered directory jumping, git worktree orchestration, and split-pane session management, all from within omp slash commands.
+cmux integration extension for [oh-my-pi](https://github.com/oh-my-pi/oh-my-pi) that keeps agent progress visible through sidebar status and desktop notifications.
 
 ## Features
 
-- **Split-pane sessions** — open new omp sessions or shell commands in right/bottom splits
 - **Sidebar status** — real-time model, thinking level, token usage, cost, and current tool display
 - **Desktop notifications** — configurable summaries on agent completion with tracked file changes
-- **Zoxide integration** — jump to frequently-visited directories via `/z` and `/zh`
-- **Git worktree support** — create worktree branches and open them in splits with context
 
 ## Requirements
 
 - [oh-my-pi](https://github.com/oh-my-pi/oh-my-pi)
 - [cmux](https://github.com/cmux/cmux) terminal multiplexer
 - [Bun](https://bun.sh) ≥1.3 (for development)
-- [zoxide](https://github.com/ajeetdsouza/zoxide) (optional, for `/z` / `/zh` commands)
-- [git](https://git-scm.com) (optional, for worktree commands)
 
 ## Installation
 
@@ -38,24 +33,7 @@ extensions:
   - ~/.omp/extensions/omp-cmux
 ```
 
-Ensure `CMUX_SOCKET_PATH` is set in your environment (cmux does this automatically when running inside a cmux session).
-
-## Commands
-
-| Command | Description |
-|---|---|
-| `/cmv [prompt]` | Open new pi session in right split |
-| `/cmh [prompt]` | Open new pi session in bottom split |
-| `/cmo <command>` | Run shell command in right split |
-| `/cmoh <command>` | Run shell command in bottom split |
-| `/cmz <query>` | Open pi in zoxide-matched directory (right split) |
-| `/cmzh <query>` | Open pi in zoxide-matched directory (bottom split) |
-| `/z <query>` | Alias for `/cmz` |
-| `/zh <query>` | Alias for `/cmzh` |
-| `/cmcv -c <branch> [--from <ref>] [note]` | Create git worktree and open in right split |
-| `/cmch -c <branch> [--from <ref>] [note]` | Create git worktree and open in bottom split |
-
-Commands gracefully fail with a notification when cmux is not available.
+When launched inside cmux, the extension detects the current cmux environment automatically. Set `CMUX_SOCKET_PATH` explicitly only when cmux is exposed through a custom socket.
 
 ## Configuration
 

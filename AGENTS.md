@@ -2,29 +2,23 @@
 
 ## Project Overview
 
-`omp-cmux` is an **oh-my-pi extension** that bridges the omp AI coding agent with **cmux** (a terminal multiplexer). It provides split-pane session management, desktop notifications, sidebar status display, zoxide-based directory jumping, and git worktree orchestration — all controlled from within omp slash commands.
+`omp-cmux` is an **oh-my-pi extension** that bridges the omp AI coding agent with **cmux** (a terminal multiplexer). Its product boundary is **Session Visibility**: desktop notifications and sidebar status keep agent progress visible without focusing the session. Session and workspace orchestration are intentionally out of scope; see `CONTEXT.md` and ADR-0001.
 
 ## Architecture & Data Flow
 
 ```
 index.ts (entry: ExtensionFactory)
- ├─ commands.ts  ──> cmux.ts (split orchestration)
- │                ──> zoxide.ts (directory resolution)
- │                ──> worktree.ts ──> git-core.ts (worktree creation)
- │                
- ├─ [cmux available?]
- │   ├─ notify.ts  ──> cmux.ts (fire-and-forget notify CLI)
- │   │              ──> config.ts (env-based gating)
- │   └─ sidebar.ts ──> cmux.ts (status display commands)
- │
- └─ [cmux unavailable] → only commands registered (graceful no-op)
+ ├─ notify.ts  ──> cmux.ts (fire-and-forget notify CLI)
+ │              └─> config.ts (environment-based notification policy)
+ └─ sidebar.ts ──> cmux.ts (status display commands)
+
+[cmux unavailable] → UI calls return undefined; omp lifecycle continues
 ```
 
 - **Entry point**: `extensions/cmux/index.ts` exports a single `ExtensionFactory` function.
-- **Feature gating**: `isCmuxAvailable()` checks `!!process.env.CMUX_SOCKET_PATH`. All cmux-dependent features check this before attempting CLI calls.
+- **Feature gating**: `isCmuxAvailable()` accepts cmux workspace/tab IDs, a socket path, or the fallback `/tmp/cmux.sock`.
 - **Event-driven**: Notify and sidebar modules register handlers on omp lifecycle events (`agent_start`, `agent_end`, `tool_result`, `turn_end`, `session_shutdown`, etc.).
-- **Fire-and-forget**: cmux CLI calls for UI features (notify, sidebar) never block or throw — failures are silently swallowed.
-- **Result pattern**: Async operations return discriminated unions: `{ ok: true; ... } | { ok: false; error: string }`.
+- **Fire-and-forget**: cmux CLI calls never block or throw into the extension flow; failures are silently swallowed.
 
 ## Key Directories
 
@@ -33,14 +27,10 @@ index.ts (entry: ExtensionFactory)
 | `extensions/cmux/` | All extension source modules |
 | `types/` | TypeScript declaration stubs for oh-my-pi API |
 | `extensions/cmux/index.ts` | Extension entry point / factory |
-| `extensions/cmux/cmux.ts` | cmux CLI integration, split lifecycle |
-| `extensions/cmux/commands.ts` | Slash command registration |
+| `extensions/cmux/cmux.ts` | Safe cmux CLI invocation and runtime environment refresh |
 | `extensions/cmux/notify.ts` | Desktop notification tracking & dispatch |
 | `extensions/cmux/sidebar.ts` | Sidebar status bar management |
-| `extensions/cmux/config.ts` | Environment-based configuration |
-| `extensions/cmux/zoxide.ts` | zoxide directory matching & resolution |
-| `extensions/cmux/worktree.ts` | Git worktree split orchestration |
-| `extensions/cmux/git-core.ts` | Git CLI wrappers |
+| `extensions/cmux/config.ts` | Environment-based notification configuration |
 
 ## Development Commands
 
@@ -66,46 +56,24 @@ bun test             # runs extensions/cmux/*.test.ts
 - **Imports are always absolute** within the extension scope, using `"@oh-my-pi/pi-coding-agent"` for the harness API.
 - No barrel files, no re-exports beyond what each module naturally exports.
 
-### Slash Command Completions
-
-- zoxide 命令（`/cmz`, `/cmzh`, `/z`, `/zh`）的补全是异步查询 `zoxide query` 得到的。
-- omp 16.0.2 的 `ExtensionAPI.registerCommand` 类型把 `getArgumentCompletions` 标为同步返回，但 TUI 运行时接受 `Awaitable`。
-- 使用 `withRuntimeCompletions()` 把异步补全函数局部包装回类型签名，避免在整个命令选项上扩散类型断言。
-
 ### Error Handling
 
 - **UI features must never break the main flow**. Use safe wrappers (`safeSendNotification`, `safeSetSidebarState`, `safeClearSidebar`) that wrap calls in try/catch.
-- **Command handlers** notify the user on failure via `ctx.ui.notify(result.error, "error")`.
 - **cmux calls** are `try/catch` guarded and return `undefined` on failure — callers check truthiness.
-
-### Result Types
-
-Use discriminated unions for operations that can fail:
-```typescript
-{ ok: true; path: string } | { ok: false; error: string }
-{ ok: true; info: CallerInfo } | { ok: false; error: string }
-```
 
 ### Environment-Based Configuration
 
 All config reads from `process.env` with sensible defaults:
-- `CMUX_SOCKET_PATH` — feature gate (cmux available iff set)
+- `CMUX_SOCKET_PATH`, `CMUX_WORKSPACE_ID`, `CMUX_TAB_ID` — cmux availability signals
 - `OMP_CMUX_NOTIFY_LEVEL` — `"all" | "medium" | "low" | "disabled"` (default `"medium"`)
 - `PI_CMUX_NOTIFY_THRESHOLD_MS` — duration before "Waiting for input" notification (default 15000)
 - `PI_CMUX_NOTIFY_DEBOUNCE_MS` — debounce window for duplicate notifications (default 3000)
 
-### Shell Escaping
-
-`shellEscape(str)` wraps a string in single quotes, escaping internal `'` as `'\''`. Used when building shell commands passed to cmux respawn.
-
-### Timing Constants (cmux.ts)
+### Timing Constant (cmux.ts)
 
 | Constant | Value | Purpose |
 |---|---|---|
 | `CMUX_TIMEOUT_MS` | 5000 | cmux CLI call timeout |
-| `SPLIT_READY_ATTEMPTS` | 20 | Polling attempts for new surface |
-| `SPLIT_READY_DELAY_MS` | 150 | Delay between polling attempts |
-| `SURFACE_BOOT_DELAY_MS` | 250 | Wait after surface creation before respawn |
 
 ### Notification Tracker Pattern
 
@@ -123,46 +91,28 @@ Status keys are declared as a const array (`STATUS_KEYS`) with a derived union t
 | `tsconfig.json` | Strict TypeScript, ES2022 target, ESNext modules, `bundler` resolution |
 | `types/oh-my-pi-stub.d.ts` | Compile-time type stubs for the oh-my-pi `ExtensionAPI` |
 | `extensions/cmux/index.ts` | Extension factory — wires modules together |
-| `extensions/cmux/cmux.ts` | cmux CLI interface and split orchestration |
+| `extensions/cmux/cmux.ts` | Safe cmux CLI invocation and environment refresh |
 
 ## Runtime/Tooling Preferences
 
 - **Runtime**: Bun 1.3.14 (declared via `packageManager` in `package.json`)
 - **TypeScript**: 6.0.3, strict mode, `bundler` module resolution, no emit
 - **Features used**: top-level `await` not needed — all async work is in event handlers
-- **Node APIs used**: `node:fs/promises` (`stat`), `node:path` (`resolve`, `dirname`, `basename`)
+- **Node APIs used**: `node:fs` (`existsSync`)
 
 ## Testing & QA
 
 - Tests live in `extensions/cmux/*.test.ts` and run with **Bun** (`bun test`).
-- Current baseline: 5 test files, 33 passing assertions.
+- Current baseline: 4 test files, 20 passing tests, 47 assertions.
 - Type safety is enforced via `strict: true` in tsconfig and the typed stub layer in `types/oh-my-pi-stub.d.ts`.
 - The `typecheck` script (`tsc --noEmit`) is also run in CI/local checks.
 
-## Slash Commands
-
-| Command | Description |
-|---|---|
-| `/cmv` | Open new pi session in right split |
-| `/cmh` | Open new pi session in bottom split |
-| `/cmo <cmd>` | Run shell command in right split |
-| `/cmoh <cmd>` | Run shell command in bottom split |
-| `/cmz <query>` | Open pi in zoxide-matched directory (right) |
-| `/cmzh <query>` | Open pi in zoxide-matched directory (bottom) |
-| `/z <query>` | Alias for `/cmz` |
-| `/zh <query>` | Alias for `/cmzh` |
-| `/cmcv -c <branch> [--from <ref>] [note]` | Git worktree in right split |
-| `/cmch -c <branch> [--from <ref>] [note]` | Git worktree in bottom split |
-
-Commands gracefully no-op when cmux is unavailable — `cmux()` and `openCommandInNewSplit()` return error results that the handler converts to user-facing notifications.
-
 ## Key Design Decisions
 
-1. **Fire-and-forget UI calls** — sidebar and notify cmux invocations use `.catch(() => {})`; they must never block or throw into the extension harness.
-2. **Feature gate at every call site** — `isCmuxAvailable()` is checked in `cmux()` and `getCallerInfo()`, not just at registration time. This allows commands to be always registered (for discoverability) while gracefully failing when cmux is absent.
-3. **Summary generation mirrors upstream notification format** — `generateSummary()` produces title/subtitle/body tuples that align with omp's native notification contracts.
-4. **Worktree path convention** — worktrees go to `../<repo>-worktrees/<slugified-branch>/`, created via `git worktree add -b <branch>`.
-5. **Dynamic imports for Node path/fs modules** — `git-core.ts` uses `await import("node:path")` and `await import("node:fs/promises")` to avoid bundling issues in the omp harness.
+1. **Session Visibility only** — sidebar and notification projection belong here; slash commands, split creation, directory jumping, and worktree orchestration do not. See ADR-0001.
+2. **Fire-and-forget UI calls** — sidebar and notify cmux invocations use `.catch(() => {})`; they must never block or throw into the extension harness.
+3. **Feature gate at every UI call** — `cmux()` resolves current cmux environment state and returns `undefined` when cmux is unavailable.
+4. **Summary generation mirrors upstream notification format** — `generateSummary()` produces title/subtitle/body tuples aligned with omp's native notification contracts.
 
 ## Agent skills
 

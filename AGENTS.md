@@ -16,7 +16,7 @@ index.ts (entry: ExtensionFactory)
 ```
 
 - **Entry point**: `extensions/cmux/index.ts` exports a single `ExtensionFactory` function.
-- **Feature gating**: `isCmuxAvailable()` accepts cmux workspace/tab IDs, a socket path, or the fallback `/tmp/cmux.sock`.
+- **Feature gating**: `cmux()` privately resolves current workspace/tab IDs, socket paths, or the fallback `/tmp/cmux.sock`; unavailable cmux skips the UI call.
 - **Event-driven**: Notify and sidebar modules register handlers on omp lifecycle events (`agent_start`, `agent_end`, `tool_result`, `turn_end`, `session_shutdown`, etc.).
 - **Fire-and-forget**: cmux CLI calls never block or throw into the extension flow; failures are silently swallowed.
 
@@ -103,7 +103,7 @@ Status keys are declared as a const array (`STATUS_KEYS`) with a derived union t
 ## Testing & QA
 
 - Tests live in `extensions/cmux/*.test.ts` and run with **Bun** (`bun test`).
-- Current baseline: 4 test files, 20 passing tests, 47 assertions.
+- Current baseline: 4 test files, 39 passing tests, 68 assertions.
 - Type safety is enforced via `strict: true` in tsconfig and the typed stub layer in `types/oh-my-pi-stub.d.ts`.
 - The `typecheck` script (`tsc --noEmit`) is also run in CI/local checks.
 

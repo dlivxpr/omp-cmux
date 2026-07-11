@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExecResult } from "@oh-my-pi/pi-coding-agent";
-import { existsSync } from "node:fs";
+import * as fs from "node:fs";
 
-export type CmuxEnv = Record<string, string | undefined>;
-export type ExistsFn = (path: string) => boolean;
+type CmuxEnv = Record<string, string | undefined>;
+type ExistsFn = (path: string) => boolean;
 
 const DEFAULT_CMUX_SOCKET_PATH = "/tmp/cmux.sock";
 
@@ -23,16 +23,16 @@ function shouldRefreshTmuxEnv(env: CmuxEnv = process.env): boolean {
 	return nonEmpty(env.TMUX) !== undefined;
 }
 
-export function resolveCmuxCli(
+function resolveCmuxCli(
 	env: CmuxEnv = process.env,
-	exists: ExistsFn = existsSync,
+	exists: ExistsFn = fs.existsSync,
 ): string {
 	const bundled = nonEmpty(env.CMUX_BUNDLED_CLI_PATH);
 	if (bundled && exists(bundled)) return bundled;
 	return "cmux";
 }
 
-export function parseTmuxEnvironmentOutput(output: string): CmuxEnv {
+function parseTmuxEnvironmentOutput(output: string): CmuxEnv {
 	const env: CmuxEnv = {};
 
 	for (const line of output.split(/\r?\n/)) {
@@ -99,14 +99,14 @@ async function resolveRuntimeCmuxEnv(
 	return { ...env, ...(await getTmuxCmuxEnv(pi, env)) };
 }
 
-export interface CmuxExecCommand {
+interface CmuxExecCommand {
 	command: string;
 	argsPrefix: string[];
 }
 
-export function buildCmuxExecCommand(
+function buildCmuxExecCommand(
 	env: CmuxEnv = process.env,
-	exists: ExistsFn = existsSync,
+	exists: ExistsFn = fs.existsSync,
 	baseEnv: CmuxEnv = process.env,
 ): CmuxExecCommand {
 	const cli = resolveCmuxCli(env, exists);
@@ -131,9 +131,9 @@ export function buildCmuxExecCommand(
 	return { command: "env", argsPrefix: [...argsPrefix, cli] };
 }
 
-export function isCmuxAvailable(
+function isCmuxAvailable(
 	env: CmuxEnv = process.env,
-	exists: ExistsFn = existsSync,
+	exists: ExistsFn = fs.existsSync,
 ): boolean {
 	if (getWorkspaceRefFromEnv(env)) return true;
 	if (nonEmpty(env.CMUX_SOCKET_PATH)) return true;

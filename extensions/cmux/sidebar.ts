@@ -1,17 +1,20 @@
 import type { AssistantMessage } from "@oh-my-pi/pi-ai";
 import type {
-	ExtensionAPI,
-	SessionStartEvent,
-	AgentStartEvent,
 	AgentEndEvent,
+	AgentStartEvent,
 	BeforeAgentStartEvent,
-	TurnEndEvent,
-	ToolExecutionStartEvent,
-	ToolExecutionEndEvent,
-	SessionShutdownEvent,
+	ExtensionAPI,
 	ExtensionContext,
+	SessionBranchEvent,
+	SessionShutdownEvent,
+	SessionStartEvent,
+	SessionSwitchEvent,
+	SessionTreeEvent,
+	ToolExecutionEndEvent,
+	ToolExecutionStartEvent,
+	TurnEndEvent,
 } from "@oh-my-pi/pi-coding-agent";
-import { cmux } from "./cmux";
+import { cmuxWorkspace } from "./cmux";
 
 export const STATUS_KEYS = [
 	"omp_state",
@@ -24,200 +27,251 @@ export const STATUS_KEYS = [
 
 export type StatusKey = (typeof STATUS_KEYS)[number];
 
-export async function setSidebarState(
-	pi: ExtensionAPI,
-	updates: Partial<Record<StatusKey, string>>,
-): Promise<void> {
-	for (const [key, value] of Object.entries(updates)) {
-		if (value !== undefined && value !== "") {
-			await cmux(pi, "set-status", key, value);
-		}
-	}
-}
-
-export async function clearSidebar(pi: ExtensionAPI): Promise<void> {
-	await Promise.all(STATUS_KEYS.map((key) => cmux(pi, "clear-status", key)));
-}
-
-export function safeSetSidebarState(
-	pi: ExtensionAPI,
-	updates: Partial<Record<StatusKey, string>>,
-): void {
-	try {
-		setSidebarState(pi, updates).catch(() => {});
-	} catch {
-		// Best-effort: sidebar failures must not break the main flow
-	}
-}
-
-export function safeClearSidebar(pi: ExtensionAPI): void {
-	try {
-		clearSidebar(pi).catch(() => {});
-	} catch {
-		// Best-effort
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Color constants
-// ---------------------------------------------------------------------------
 const GREEN = "#22C55E";
 const AMBER = "#F59E0B";
 const PURPLE = "#8B5CF6";
 const BLUE = "#3B82F6";
 const GRAY = "#6B7280";
 
-// ---------------------------------------------------------------------------
-// Formatting helpers
-// ---------------------------------------------------------------------------
-function formatTokens(n: number): string {
-	if (n >= 1_000_000) {
-		return `${(n / 1_000_000).toFixed(1)}M`;
+interface StatusPresentation {
+	icon: string;
+	color: string;
+	priority: number;
+}
+
+const STATUS_PRESENTATION: Record<StatusKey, StatusPresentation> = {
+	omp_state: { icon: "checkmark.circle", color: GREEN, priority: 100 },
+	omp_tool: { icon: "wrench", color: GRAY, priority: 90 },
+	omp_model: { icon: "brain", color: PURPLE, priority: 60 },
+	omp_thinking: { icon: "sparkles", color: AMBER, priority: 50 },
+	omp_tokens: { icon: "number", color: BLUE, priority: 20 },
+	omp_cost: { icon: "dollarsign.circle", color: GREEN, priority: 10 },
+};
+
+function getStatusPresentation(
+	key: StatusKey,
+	value: string,
+): StatusPresentation {
+	if (key === "omp_state" && value === "Working") {
+		return { icon: "arrow.circlepath", color: AMBER, priority: 100 };
 	}
-	if (n >= 1_000) {
-		return `${(n / 1_000).toFixed(1)}k`;
+	if (key === "omp_thinking" && value === "off") {
+		return { icon: "sparkles", color: GRAY, priority: 50 };
 	}
-	return String(n);
+	return STATUS_PRESENTATION[key];
 }
 
-function formatCost(n: number): string {
-	return `$${n.toFixed(2)}`;
+interface SidebarWriter {
+	reset(initial: ReadonlyMap<StatusKey, string>): void;
+	set(key: StatusKey, value: string): void;
+	clear(key: StatusKey): void;
+	invalidateAndClear(): Promise<void>;
 }
 
-function shortModel(id: string): string {
-	return id
-		.replace(/^claude-/, "")
-		.replace(/-\d{8}$/, "");
+function createSidebarWriter(pi: ExtensionAPI): SidebarWriter {
+	let generation = 0;
+	let tail: Promise<void> = Promise.resolve();
+
+	function enqueue(expectedGeneration: number, args: string[]): void {
+		const execute = async (): Promise<void> => {
+			if (expectedGeneration !== generation) return;
+			try {
+				await cmuxWorkspace(pi, ...args);
+			} catch {
+				// Best-effort: sidebar failures must not break the main flow.
+			}
+		};
+		tail = tail.then(execute, execute);
+	}
+
+	return {
+		reset(initial) {
+			generation += 1;
+			const expectedGeneration = generation;
+			for (const key of STATUS_KEYS) {
+				enqueue(expectedGeneration, ["clear-status", key]);
+			}
+			for (const key of STATUS_KEYS) {
+				const value = initial.get(key);
+				if (value === undefined || value === "") continue;
+				const presentation = getStatusPresentation(key, value);
+				enqueue(expectedGeneration, [
+					"set-status",
+					key,
+					value,
+					"--icon",
+					presentation.icon,
+					"--color",
+					presentation.color,
+					"--priority",
+					String(presentation.priority),
+				]);
+			}
+		},
+		set(key, value) {
+			if (value === "") return;
+			const presentation = getStatusPresentation(key, value);
+			enqueue(generation, [
+				"set-status",
+				key,
+				value,
+				"--icon",
+				presentation.icon,
+				"--color",
+				presentation.color,
+				"--priority",
+				String(presentation.priority),
+			]);
+		},
+		clear(key) {
+			enqueue(generation, ["clear-status", key]);
+		},
+		invalidateAndClear() {
+			generation += 1;
+			const expectedGeneration = generation;
+			for (const key of STATUS_KEYS) {
+				enqueue(expectedGeneration, ["clear-status", key]);
+			}
+			return tail;
+		},
+	};
 }
 
-// ---------------------------------------------------------------------------
-// Sidebar event handlers
-// ---------------------------------------------------------------------------
+function formatTokens(tokens: number): string {
+	if (tokens >= 999_950) {
+		return `${(tokens / 1_000_000).toFixed(1)}M`;
+	}
+	if (tokens >= 1_000) {
+		return `${(tokens / 1_000).toFixed(1)}k`;
+	}
+	return String(tokens);
+}
+
+function formatCost(cost: number): string {
+	return cost < 0.01 ? "run <$0.01" : `run $${cost.toFixed(2)}`;
+}
+
+function formatModelId(id: string): string {
+	const segment = id.split("/").at(-1) ?? "";
+	const normalized = segment
+		.replace(/-\d{8}$/, "")
+		.replace(/^claude-/, "");
+	const codePoints = Array.from(normalized);
+	return codePoints.length > 24
+		? `${codePoints.slice(0, 23).join("")}…`
+		: normalized;
+}
+
 export function registerSidebarHandlers(pi: ExtensionAPI): void {
-	let sessionCost = 0;
+	let runCost = 0;
 	const activeTools = new Map<string, string>();
+	const writer = createSidebarWriter(pi);
 
-	function run(...args: string[]) {
-		cmux(pi, ...args).catch(() => {});
-	}
+	function resetSessionProjection(ctx: ExtensionContext): void {
+		if (!ctx.hasUI) return;
+		runCost = 0;
+		activeTools.clear();
 
-	function setStatus(key: string, value: string, icon: string, color: string) {
-		run("set-status", key, value, "--icon", icon, "--color", color);
-	}
-
-	function clearStatus(key: string) {
-		run("clear-status", key);
+		const initial = new Map<StatusKey, string>();
+		initial.set("omp_state", ctx.isIdle() ? "Idle" : "Working");
+		if (ctx.model?.id) {
+			initial.set("omp_model", formatModelId(ctx.model.id));
+		}
+		const thinking = pi.getThinkingLevel();
+		if (thinking) {
+			initial.set("omp_thinking", thinking);
+		}
+		const tokens = ctx.getContextUsage()?.tokens;
+		if (tokens !== undefined && Number.isFinite(tokens) && tokens > 0) {
+			initial.set("omp_tokens", formatTokens(tokens));
+		}
+		writer.reset(initial);
 	}
 
 	pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
-		if (!ctx.hasUI) return;
-		sessionCost = 0;
-		activeTools.clear();
+		resetSessionProjection(ctx);
+	});
 
-		const modelId = ctx.model?.id;
-		const thinking = pi.getThinkingLevel();
-		const usage = ctx.getContextUsage();
+	pi.on("session_switch", async (_event: SessionSwitchEvent, ctx: ExtensionContext) => {
+		resetSessionProjection(ctx);
+	});
 
-		void (async () => {
-			try {
-				await clearSidebar(pi);
-			} catch {
-				// Best-effort
-			}
+	pi.on("session_branch", async (_event: SessionBranchEvent, ctx: ExtensionContext) => {
+		resetSessionProjection(ctx);
+	});
 
-			setStatus("omp_state", "Idle", "checkmark.circle", GREEN);
-
-			if (modelId) {
-				setStatus("omp_model", shortModel(modelId), "brain", PURPLE);
-			}
-
-			if (thinking && thinking !== "off") {
-				setStatus("omp_thinking", thinking, "sparkles", AMBER);
-			} else if (thinking === "off") {
-				setStatus("omp_thinking", "off", "sparkles", GRAY);
-			}
-
-			if (usage && usage.tokens != null && usage.tokens > 0) {
-				setStatus("omp_tokens", formatTokens(usage.tokens), "number", BLUE);
-			}
-		})();
+	pi.on("session_tree", async (_event: SessionTreeEvent, ctx: ExtensionContext) => {
+		resetSessionProjection(ctx);
 	});
 
 	pi.on("before_agent_start", async (_event: BeforeAgentStartEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		// Earliest model refresh: fires right after user submits prompt,
-		// before the agent loop begins.  This catches model changes from
-		// /model or /settings before the next agent invocation.
 		if (ctx.model?.id) {
-			setStatus("omp_model", shortModel(ctx.model.id), "brain", PURPLE);
+			writer.set("omp_model", formatModelId(ctx.model.id));
 		}
 		const thinking = pi.getThinkingLevel();
-		if (thinking && thinking !== "off") {
-			setStatus("omp_thinking", thinking, "sparkles", AMBER);
-		} else if (thinking === "off") {
-			setStatus("omp_thinking", "off", "sparkles", GRAY);
+		if (thinking) {
+			writer.set("omp_thinking", thinking);
 		}
 	});
 
 	pi.on("agent_start", async (_event: AgentStartEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		setStatus("omp_state", "Working", "arrow.circlepath", AMBER);
+		writer.set("omp_state", "Working");
 	});
 
 	pi.on("agent_end", async (_event: AgentEndEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		setStatus("omp_state", "Idle", "checkmark.circle", GREEN);
-		clearStatus("omp_tool");
+		writer.set("omp_state", "Idle");
+		writer.clear("omp_tool");
 
-		const usage = ctx.getContextUsage();
-		if (usage && usage.tokens != null && usage.tokens > 0) {
-			setStatus("omp_tokens", formatTokens(usage.tokens), "number", BLUE);
+		const tokens = ctx.getContextUsage()?.tokens;
+		if (tokens !== undefined && Number.isFinite(tokens) && tokens > 0) {
+			writer.set("omp_tokens", formatTokens(tokens));
 		}
-
-		if (sessionCost > 0) {
-			setStatus("omp_cost", formatCost(sessionCost), "dollarsign.circle", GREEN);
+		if (runCost > 0) {
+			writer.set("omp_cost", formatCost(runCost));
 		}
-
 	});
 
 	pi.on("turn_end", async (event: TurnEndEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 
-		const msg = event.message;
-		if (msg.role === "assistant") {
-			const assistantMsg = msg as AssistantMessage;
-			if (assistantMsg.usage?.cost?.total) {
-				sessionCost += assistantMsg.usage.cost.total;
-				setStatus("omp_cost", formatCost(sessionCost), "dollarsign.circle", GREEN);
+		if (event.message.role === "assistant") {
+			const cost = (event.message as AssistantMessage).usage?.cost?.total;
+			if (cost !== undefined && Number.isFinite(cost) && cost > 0) {
+				runCost += cost;
+				writer.set("omp_cost", formatCost(runCost));
 			}
 		}
 
-		const usage = ctx.getContextUsage();
-		if (usage && usage.tokens != null && usage.tokens > 0) {
-			setStatus("omp_tokens", formatTokens(usage.tokens), "number", BLUE);
+		const tokens = ctx.getContextUsage()?.tokens;
+		if (tokens !== undefined && Number.isFinite(tokens) && tokens > 0) {
+			writer.set("omp_tokens", formatTokens(tokens));
 		}
 	});
 
 	pi.on("tool_execution_start", async (event: ToolExecutionStartEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 		activeTools.set(event.toolCallId, event.toolName);
-		setStatus("omp_tool", event.toolName, "wrench", GRAY);
+		writer.set("omp_tool", event.toolName);
 	});
 
 	pi.on("tool_execution_end", async (event: ToolExecutionEndEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 		activeTools.delete(event.toolCallId);
-		if (activeTools.size > 0) {
-			const lastTool = Array.from(activeTools.values()).pop();
-			if (lastTool) {
-				setStatus("omp_tool", lastTool, "wrench", GRAY);
-			}
+		let lastTool: string | undefined;
+		for (const toolName of activeTools.values()) {
+			lastTool = toolName;
+		}
+		if (lastTool !== undefined) {
+			writer.set("omp_tool", lastTool);
 		} else {
-			clearStatus("omp_tool");
+			writer.clear("omp_tool");
 		}
 	});
 
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent, _ctx: ExtensionContext) => {
-		safeClearSidebar(pi);
+		await writer.invalidateAndClear();
 	});
 }

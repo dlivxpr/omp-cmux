@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import type { ExecResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import * as fs from "node:fs";
-import { cmux } from "./cmux";
+import { cmux, cmuxWorkspace } from "./cmux";
 
 const CMUX_TIMEOUT_MS = 5000;
 
@@ -114,6 +114,44 @@ describe("cmux runtime adapter availability", () => {
 
 		expect(result).toBeUndefined();
 		expect(calls).toEqual([]);
+	});
+});
+
+describe("cmux workspace-scoped availability", () => {
+	it("executes for workspace or socket signals but not a lone tab", async () => {
+		spyOn(fs, "existsSync").mockReturnValue(false);
+
+		for (const [key, executes] of [
+			["CMUX_WORKSPACE_ID", true],
+			["CMUX_SOCKET_PATH", true],
+			["CMUX_TAB_ID", false],
+		] as const) {
+			process.env[key] = `${key.toLowerCase()}:1`;
+			const { pi, calls } = createMockPI();
+
+			const result = await cmuxWorkspace(pi, "set-status", "omp_state", "Idle");
+
+			expect(calls).toEqual(
+				executes
+					? [timedCall("cmux", ["set-status", "omp_state", "Idle"])]
+					: [],
+			);
+			if (!executes) expect(result).toBeUndefined();
+			delete process.env[key];
+		}
+	});
+
+	it("executes when the default socket exists", async () => {
+		spyOn(fs, "existsSync").mockImplementation(
+			(path) => path === "/tmp/cmux.sock",
+		);
+		const { pi, calls } = createMockPI();
+
+		await cmuxWorkspace(pi, "clear-status", "omp_state");
+
+		expect(calls).toEqual([
+			timedCall("cmux", ["clear-status", "omp_state"]),
+		]);
 	});
 });
 
@@ -284,6 +322,57 @@ describe("cmux runtime adapter tmux refresh", () => {
 		await cmux(pi, "notify", "--title", "Done");
 
 		expect(calls[2]).toEqual(timedCall("cmux", ["notify", "--title", "Done"]));
+	});
+});
+
+describe("cmux workspace-scoped tmux refresh", () => {
+	it("uses a refreshed workspace ID", async () => {
+		process.env.TMUX = "/tmp/tmux";
+		process.env.CMUX_TAB_ID = "tab:stale";
+		spyOn(fs, "existsSync").mockReturnValue(false);
+		const { pi, calls } = createMockPI((command, args) => ({
+			stdout:
+				command === "tmux" && !args.includes("-g")
+					? "CMUX_WORKSPACE_ID=workspace:refreshed"
+					: "",
+			stderr: "",
+			code: 0,
+			killed: false,
+		}));
+
+		await cmuxWorkspace(pi, "set-status", "omp_state", "Idle");
+
+		expect(calls[2]).toEqual(timedCall("env", [
+				"-u",
+				"CMUX_TAB_ID",
+				"CMUX_WORKSPACE_ID=workspace:refreshed",
+				"cmux",
+				"set-status",
+				"omp_state",
+				"Idle",
+			]));
+	});
+
+	it("rejects a refreshed tab-only environment", async () => {
+		process.env.TMUX = "/tmp/tmux";
+		spyOn(fs, "existsSync").mockReturnValue(false);
+		const { pi, calls } = createMockPI((command, args) => ({
+			stdout:
+				command === "tmux" && !args.includes("-g")
+					? "CMUX_TAB_ID=tab:refreshed"
+					: "",
+			stderr: "",
+			code: 0,
+			killed: false,
+		}));
+
+		const result = await cmuxWorkspace(pi, "set-status", "omp_state", "Idle");
+
+		expect(result).toBeUndefined();
+		expect(calls).toEqual([
+			timedCall("tmux", ["show-environment", "-g"]),
+			timedCall("tmux", ["show-environment"]),
+		]);
 	});
 });
 

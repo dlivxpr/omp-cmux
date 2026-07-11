@@ -60,7 +60,7 @@ When running inside cmux, the extension displays these status entries:
 - **omp_model** — current model (e.g. `sonnet-4`)
 - **omp_thinking** — thinking level (e.g. `low`, `high`, `off`)
 - **omp_tokens** — context window usage
-- **omp_cost** — cumulative session cost
+- **omp_cost** — cumulative cost for the current run context
 - **omp_tool** — currently executing tool
 
 ## Development

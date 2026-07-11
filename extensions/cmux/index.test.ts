@@ -25,5 +25,8 @@ it("registers Session Visibility handlers without Session Orchestration commands
 	expect(events).toContain("agent_end");
 	expect(events).toContain("tool_result");
 	expect(events).toContain("turn_end");
+	expect(events).toContain("session_switch");
+	expect(events).toContain("session_branch");
+	expect(events).toContain("session_tree");
 	expect(events).toContain("session_shutdown");
 });

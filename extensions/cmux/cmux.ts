@@ -131,11 +131,15 @@ function buildCmuxExecCommand(
 	return { command: "env", argsPrefix: [...argsPrefix, cli] };
 }
 
+type CmuxScope = "any" | "workspace";
+
 function isCmuxAvailable(
 	env: CmuxEnv = process.env,
 	exists: ExistsFn = fs.existsSync,
+	scope: CmuxScope = "any",
 ): boolean {
-	if (getWorkspaceRefFromEnv(env)) return true;
+	if (nonEmpty(env.CMUX_WORKSPACE_ID)) return true;
+	if (scope === "any" && nonEmpty(env.CMUX_TAB_ID)) return true;
 	if (nonEmpty(env.CMUX_SOCKET_PATH)) return true;
 	return exists(DEFAULT_CMUX_SOCKET_PATH);
 }
@@ -148,15 +152,16 @@ const CMUX_TIMEOUT_MS = 5000;
 // ---------------------------------------------------------------------------
 // Low-level cmux helper (fire-and-forget for simple calls like notify)
 // ---------------------------------------------------------------------------
-export async function cmux(
+async function executeCmux(
 	pi: ExtensionAPI,
-	...args: string[]
+	scope: CmuxScope,
+	args: string[],
 ): Promise<ExecResult | undefined> {
 	try {
 		const env = shouldRefreshTmuxEnv()
 			? await resolveRuntimeCmuxEnv(pi)
 			: process.env;
-		if (!isCmuxAvailable(env)) return undefined;
+		if (!isCmuxAvailable(env, fs.existsSync, scope)) return undefined;
 		const invocation = buildCmuxExecCommand(env);
 		return await pi.exec(invocation.command, [...invocation.argsPrefix, ...args], {
 			timeout: CMUX_TIMEOUT_MS,
@@ -164,4 +169,18 @@ export async function cmux(
 	} catch {
 		return undefined;
 	}
+}
+
+export function cmux(
+	pi: ExtensionAPI,
+	...args: string[]
+): Promise<ExecResult | undefined> {
+	return executeCmux(pi, "any", args);
+}
+
+export function cmuxWorkspace(
+	pi: ExtensionAPI,
+	...args: string[]
+): Promise<ExecResult | undefined> {
+	return executeCmux(pi, "workspace", args);
 }

@@ -171,6 +171,37 @@ async function executeCmux(
 	}
 }
 
+export async function cmuxNotify(
+	pi: ExtensionAPI,
+	...args: string[]
+): Promise<ExecResult | undefined> {
+	try {
+		const env = shouldRefreshTmuxEnv()
+			? await resolveRuntimeCmuxEnv(pi)
+			: process.env;
+		const workspace = nonEmpty(env.CMUX_WORKSPACE_ID);
+		const surface = nonEmpty(env.CMUX_SURFACE_ID);
+		const tab = workspace ? undefined : nonEmpty(env.CMUX_TAB_ID);
+		const panel = surface ? undefined : nonEmpty(env.CMUX_PANEL_ID);
+		if (!workspace && !surface && !tab && !panel) return undefined;
+
+		const targetArgs: string[] = [];
+		if (workspace) targetArgs.push("--workspace", workspace);
+		else if (tab) targetArgs.push("--tab", tab);
+		if (surface) targetArgs.push("--surface", surface);
+		else if (panel) targetArgs.push("--panel", panel);
+
+		const invocation = buildCmuxExecCommand(env);
+		return await pi.exec(
+			invocation.command,
+			[...invocation.argsPrefix, ...args, ...targetArgs],
+			{ timeout: CMUX_TIMEOUT_MS },
+		);
+	} catch {
+		return undefined;
+	}
+}
+
 export function cmux(
 	pi: ExtensionAPI,
 	...args: string[]

@@ -10,7 +10,7 @@ import type {
 	SessionStartEvent,
 } from "@oh-my-pi/pi-coding-agent";
 import { isSilentAbort } from "@oh-my-pi/pi-coding-agent";
-import { cmux } from "./cmux";
+import { cmuxNotify } from "./cmux";
 import { getNotifyLevel, shouldNotify, getNumberFromEnv } from "./config";
 
 // ---------------------------------------------------------------------------
@@ -44,6 +44,10 @@ interface RunState {
 	firstToolError: string | undefined;
 }
 
+interface PendingRun {
+	readonly state: RunState;
+}
+
 function createRunState(): RunState {
 	return {
 		startedAt: Date.now(),
@@ -55,14 +59,6 @@ function createRunState(): RunState {
 	};
 }
 
-function resetRunState(state: RunState): void {
-	state.startedAt = Date.now();
-	state.readFiles.clear();
-	state.changedFiles.clear();
-	state.searchCount = 0;
-	state.bashCount = 0;
-	state.firstToolError = undefined;
-}
 
 function extractTarget(toolName: string, input: Record<string, unknown>): string {
 	switch (toolName) {
@@ -94,13 +90,25 @@ function formatDuration(ms: number): string {
 // ---------------------------------------------------------------------------
 // Summary generation (aligned with upstream)
 // ---------------------------------------------------------------------------
+type NotificationKind = "waiting" | "complete" | "error";
+type AgentEndStatus = "success" | "error" | "aborted" | "plan_ready";
+
+interface NotificationPayload {
+	readonly kind: NotificationKind;
+	readonly title: string;
+	readonly subtitle: string;
+	readonly body: string;
+}
+
 function generateSummary(
 	state: RunState,
 	durationMs: number,
-	status: "success" | "error" | "aborted" | "plan_ready",
-): { title: string; subtitle: string; body: string } {
+	status: AgentEndStatus,
+	terminalError: string | undefined,
+): NotificationPayload {
 	if (status === "plan_ready") {
 		return {
+			kind: "complete",
 			title: "Plan Ready",
 			subtitle: "Review the plan to apply or refine",
 			body: "",
@@ -108,13 +116,20 @@ function generateSummary(
 	}
 
 	if (status === "aborted") {
-		return { title: "Aborted", subtitle: "Session was aborted", body: "" };
+		return {
+			kind: "error",
+			title: "Aborted",
+			subtitle: "Session was aborted",
+			body: "",
+		};
 	}
 
 	if (status === "error") {
 		return {
+			kind: "error",
 			title: "Error",
-			subtitle: state.firstToolError || "Session ended with an error",
+			subtitle:
+				terminalError ?? state.firstToolError ?? "Session ended with an error",
 			body: "",
 		};
 	}
@@ -157,12 +172,10 @@ function generateSummary(
 		subtitle += ` in ${formatDuration(durationMs)}`;
 	}
 
-	return { title: "Task Complete", subtitle, body: "" };
+	return { kind: "complete", title: "Task Complete", subtitle, body: "" };
 }
 
-function getAgentEndStatus(
-	messages: AgentMessage[],
-): "success" | "error" | "aborted" | "plan_ready" {
+function getAgentEndStatus(messages: AgentMessage[]): AgentEndStatus {
 	const lastMsg = messages[messages.length - 1];
 	if (lastMsg?.role === "assistant") {
 		const assistant = lastMsg as AssistantMessage;
@@ -196,36 +209,28 @@ function getErrorMessage(
 // Notification sender with debounce & availability tracking
 // ---------------------------------------------------------------------------
 interface NotificationReservation {
-	sessionGeneration: number;
-	runGeneration: number;
+	readonly sessionGeneration: number;
 }
 
 interface NotificationDeliveryState {
-	cmuxUnavailable: boolean;
 	sessionGeneration: number;
-	runGeneration: number;
 	inFlightByKey: Map<string, NotificationReservation>;
 	deliveredAtByKey: Map<string, number>;
-	pendingSends: Set<Promise<void>>;
 }
 
 function sendNotification(
 	pi: ExtensionAPI,
 	state: NotificationDeliveryState,
-	title: string,
-	subtitle: string,
-	body: string,
+	notification: NotificationPayload,
 ): void {
-	if (state.cmuxUnavailable) return;
-
-	const level = getNotifyLevel();
-	let type: "waiting" | "complete" | "error" = "complete";
-	if (title === "Waiting") type = "waiting";
-	else if (title === "Error" || title === "Aborted") type = "error";
-	if (!shouldNotify(level, type)) return;
+	if (!shouldNotify(getNotifyLevel(), notification.kind)) return;
 
 	const debounceMs = getNumberFromEnv("PI_CMUX_NOTIFY_DEBOUNCE_MS", 3000);
-	const key = JSON.stringify([title, subtitle, body]);
+	const key = JSON.stringify([
+		notification.title,
+		notification.subtitle,
+		notification.body,
+	]);
 	const lastDeliveredAt = state.deliveredAtByKey.get(key);
 	if (state.inFlightByKey.has(key)) return;
 	if (
@@ -237,166 +242,136 @@ function sendNotification(
 
 	const reservation: NotificationReservation = {
 		sessionGeneration: state.sessionGeneration,
-		runGeneration: state.runGeneration,
 	};
 	state.inFlightByKey.set(key, reservation);
 
-	const args = ["notify", "--title", title];
-	if (subtitle) args.push("--subtitle", subtitle);
-	if (body) args.push("--body", body);
+	const args = ["notify", "--title", notification.title];
+	if (notification.subtitle) {
+		args.push("--subtitle", notification.subtitle);
+	}
+	if (notification.body) args.push("--body", notification.body);
 
-	let pending!: Promise<void>;
-	pending = cmux(pi, ...args)
-		.then(
-			(result) => {
-				if (!result || result.code !== 0) {
-					if (
-						state.sessionGeneration === reservation.sessionGeneration &&
-						state.runGeneration === reservation.runGeneration
-					) {
-						state.cmuxUnavailable = true;
-					}
-					return;
-				}
-
-				if (
-					state.sessionGeneration === reservation.sessionGeneration &&
-					state.runGeneration === reservation.runGeneration
-				) {
-					state.deliveredAtByKey.set(key, Date.now());
-				}
-			},
-			() => {
-				if (
-					state.sessionGeneration === reservation.sessionGeneration &&
-					state.runGeneration === reservation.runGeneration
-				) {
-					state.cmuxUnavailable = true;
-				}
-			},
-		)
+	cmuxNotify(pi, ...args)
+		.then((result) => {
+			if (
+				result?.code === 0 &&
+				state.sessionGeneration === reservation.sessionGeneration
+			) {
+				state.deliveredAtByKey.set(key, Date.now());
+			}
+		})
+		.catch(() => {})
 		.finally(() => {
 			if (state.inFlightByKey.get(key) === reservation) {
 				state.inFlightByKey.delete(key);
 			}
-			state.pendingSends.delete(pending);
 		});
-	state.pendingSends.add(pending);
 }
 
 function safeSendNotification(
 	pi: ExtensionAPI,
 	state: NotificationDeliveryState,
-	title: string,
-	subtitle: string,
-	body: string,
+	notification: NotificationPayload,
 ): void {
 	try {
-		sendNotification(pi, state, title, subtitle, body);
+		sendNotification(pi, state, notification);
 	} catch {
 		// Best-effort: never let notification failures affect the main flow
 	}
 }
 
-function safeClearNotifications(pi: ExtensionAPI): void {
-	try {
-		cmux(pi, "clear-notifications").catch(() => {});
-	} catch {
-		// Best-effort: never let notification failures affect the main flow
-	}
-}
 
 // Handlers
 // ---------------------------------------------------------------------------
 
 export function registerNotifyHandlers(pi: ExtensionAPI): void {
-	const runState = createRunState();
+	const pendingRuns: PendingRun[] = [];
 	const deliveryState: NotificationDeliveryState = {
-		cmuxUnavailable: false,
 		sessionGeneration: 0,
-		runGeneration: 0,
 		inFlightByKey: new Map(),
 		deliveredAtByKey: new Map(),
-		pendingSends: new Set(),
 	};
+
 	pi.on("agent_start", async (_event: AgentStartEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		resetRunState(runState);
-		deliveryState.runGeneration++;
-		deliveryState.cmuxUnavailable = false;
+		pendingRuns.push({ state: createRunState() });
 	});
 
-	pi.on("tool_result", async (event: ToolResultEvent, _ctx: ExtensionContext) => {
-		if (!_ctx.hasUI) return;
+	pi.on("tool_result", async (event: ToolResultEvent, ctx: ExtensionContext) => {
+		if (!ctx.hasUI) return;
+		const state = pendingRuns.at(-1)?.state;
+		if (!state) return;
+
 		if (event.isError) {
-			if (!runState.firstToolError) {
-			const text = event.content
-				.filter((c): c is { type: "text"; text: string } => c.type === "text")
-				.map((c) => c.text)
-				.join(" ")
-				.slice(0, 200);
-				runState.firstToolError = text || "Tool error";
+			if (!state.firstToolError) {
+				const text = event.content
+					.filter((c): c is { type: "text"; text: string } => c.type === "text")
+					.map((c) => c.text)
+					.join(" ")
+					.slice(0, 200);
+				state.firstToolError = text || "Tool error";
 			}
 			return;
 		}
 
 		if (isReadToolResult(event)) {
 			const target = extractTarget(event.toolName, event.input);
-			if (target) runState.readFiles.add(target);
+			if (target) state.readFiles.add(target);
 		} else if (isEditToolResult(event) || isWriteToolResult(event)) {
 			const target = extractTarget(event.toolName, event.input);
-			if (target) runState.changedFiles.add(target);
+			if (target) state.changedFiles.add(target);
 		} else if (isSearchToolResult(event)) {
-			runState.searchCount++;
+			state.searchCount++;
 		} else if (isBashToolResult(event)) {
-			runState.bashCount++;
+			state.bashCount++;
 		}
 	});
 
 	pi.on("agent_end", async (event: AgentEndEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
+		const pendingRun = pendingRuns.shift();
+		if (!pendingRun) return;
+
 		const status = getAgentEndStatus(event.messages);
-		if (status === "error" && !runState.firstToolError) {
-			const msg = getErrorMessage(event.messages);
-			if (msg) runState.firstToolError = msg;
-		}
-		const durationMs = Date.now() - runState.startedAt;
-		const summary = generateSummary(runState, durationMs, status);
-		safeSendNotification(pi, deliveryState, summary.title, summary.subtitle, summary.body);
+		const terminalError =
+			status === "error" ? getErrorMessage(event.messages) : undefined;
+		const durationMs = Date.now() - pendingRun.state.startedAt;
+		const summary = generateSummary(
+			pendingRun.state,
+			durationMs,
+			status,
+			terminalError,
+		);
+		safeSendNotification(pi, deliveryState, summary);
 
 		if (status === "success") {
-			const thresholdMs = getNumberFromEnv("PI_CMUX_NOTIFY_THRESHOLD_MS", 15000);
+			const thresholdMs = getNumberFromEnv(
+				"PI_CMUX_NOTIFY_THRESHOLD_MS",
+				15000,
+			);
 			if (durationMs >= thresholdMs) {
-				safeSendNotification(pi, deliveryState, "Waiting", "Ready for input", "");
+				safeSendNotification(pi, deliveryState, {
+					kind: "waiting",
+					title: "Waiting",
+					subtitle: "Ready for input",
+					body: "",
+				});
 			}
 		}
 	});
 
 	pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		resetRunState(runState);
+		pendingRuns.length = 0;
 		deliveryState.sessionGeneration++;
-		deliveryState.runGeneration++;
-		deliveryState.cmuxUnavailable = false;
 		deliveryState.inFlightByKey.clear();
 		deliveryState.deliveredAtByKey.clear();
-		safeClearNotifications(pi);
 	});
 
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent) => {
-		const pendingAtShutdown = Array.from(deliveryState.pendingSends);
+		pendingRuns.length = 0;
 		deliveryState.sessionGeneration++;
-		resetRunState(runState);
-		deliveryState.runGeneration++;
-		deliveryState.cmuxUnavailable = false;
 		deliveryState.inFlightByKey.clear();
 		deliveryState.deliveredAtByKey.clear();
-		safeClearNotifications(pi);
-
-		if (pendingAtShutdown.length > 0) {
-			void Promise.allSettled(pendingAtShutdown).then(() => {
-				safeClearNotifications(pi);
-			});
-		}
 	});
 }

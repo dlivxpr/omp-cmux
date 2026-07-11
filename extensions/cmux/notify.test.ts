@@ -75,6 +75,17 @@ let originalTmux: string | undefined;
 let originalNotifyLevel: string | undefined;
 let originalNotifyThreshold: string | undefined;
 let originalNotifyDebounce: string | undefined;
+let originalWorkspaceId: string | undefined;
+let originalSurfaceId: string | undefined;
+let originalTabId: string | undefined;
+let originalPanelId: string | undefined;
+
+const TARGET_ARGS = [
+	"--workspace",
+	"workspace-test",
+	"--surface",
+	"surface-test",
+];
 
 beforeEach(() => {
 	originalSocketPath = process.env.CMUX_SOCKET_PATH;
@@ -83,12 +94,20 @@ beforeEach(() => {
 	originalNotifyLevel = process.env.OMP_CMUX_NOTIFY_LEVEL;
 	originalNotifyThreshold = process.env.PI_CMUX_NOTIFY_THRESHOLD_MS;
 	originalNotifyDebounce = process.env.PI_CMUX_NOTIFY_DEBOUNCE_MS;
+	originalWorkspaceId = process.env.CMUX_WORKSPACE_ID;
+	originalSurfaceId = process.env.CMUX_SURFACE_ID;
+	originalTabId = process.env.CMUX_TAB_ID;
+	originalPanelId = process.env.CMUX_PANEL_ID;
 	process.env.CMUX_SOCKET_PATH = "/tmp/test-cmux.sock";
 	delete process.env.CMUX_BUNDLED_CLI_PATH;
 	delete process.env.TMUX;
 	process.env.OMP_CMUX_NOTIFY_LEVEL = "medium";
 	process.env.PI_CMUX_NOTIFY_THRESHOLD_MS = "15000";
 	process.env.PI_CMUX_NOTIFY_DEBOUNCE_MS = "3000";
+	process.env.CMUX_WORKSPACE_ID = "workspace-test";
+	process.env.CMUX_SURFACE_ID = "surface-test";
+	delete process.env.CMUX_TAB_ID;
+	delete process.env.CMUX_PANEL_ID;
 });
 
 afterEach(() => {
@@ -106,6 +125,14 @@ afterEach(() => {
 	if (originalNotifyDebounce === undefined) {
 		delete process.env.PI_CMUX_NOTIFY_DEBOUNCE_MS;
 	} else process.env.PI_CMUX_NOTIFY_DEBOUNCE_MS = originalNotifyDebounce;
+	if (originalWorkspaceId === undefined) delete process.env.CMUX_WORKSPACE_ID;
+	else process.env.CMUX_WORKSPACE_ID = originalWorkspaceId;
+	if (originalSurfaceId === undefined) delete process.env.CMUX_SURFACE_ID;
+	else process.env.CMUX_SURFACE_ID = originalSurfaceId;
+	if (originalTabId === undefined) delete process.env.CMUX_TAB_ID;
+	else process.env.CMUX_TAB_ID = originalTabId;
+	if (originalPanelId === undefined) delete process.env.CMUX_PANEL_ID;
+	else process.env.CMUX_PANEL_ID = originalPanelId;
 });
 
 describe("registerNotifyHandlers child-agent filtering", () => {
@@ -167,6 +194,7 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 			"Task Complete",
 			"--subtitle",
 			"Reviewed README.md",
+			...TARGET_ARGS,
 		]);
 	});
 
@@ -207,6 +235,7 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 				"Task Complete",
 				"--subtitle",
 				"Reviewed README.md",
+				...TARGET_ARGS,
 			],
 		});
 	});
@@ -352,40 +381,50 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 		expect(execCalls[1].args[2]).toBe("Error");
 	});
 
-	it("ignores a successful send from an obsolete run generation", async () => {
-		const firstSend = Promise.withResolvers<MockExecResult>();
-		const { pi, handlers, execCalls } = createMockPI(
-			(_tool, _args, callNumber) =>
-				callNumber === 1
-					? firstSend.promise
-					: { stdout: "", stderr: "", code: 0 },
-		);
+	it("keeps overlapping run summaries isolated in FIFO end order", async () => {
+		const { pi, handlers, execCalls } = createMockPI();
 		registerNotifyHandlers(pi);
 		const ctx = createMockContext(true);
-		const aborted = {
+		const success = {
 			type: "agent_end",
-			messages: [{ role: "assistant", stopReason: "aborted" }],
+			messages: [{ role: "assistant", stopReason: "endTurn" }],
 		} as unknown as AgentEndEvent;
 
-		await handlers.agent_start!(
-			{ type: "agent_start" } as AgentStartEvent,
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.tool_result!(
+			{
+				type: "tool_result",
+				toolName: "read",
+				toolCallId: "read-a",
+				input: { path: "a.ts" },
+				content: [],
+				isError: false,
+			} as unknown as ToolResultEvent,
 			ctx,
 		);
-		await handlers.agent_end!(aborted, ctx);
-		await handlers.agent_start!(
-			{ type: "agent_start" } as AgentStartEvent,
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.tool_result!(
+			{
+				type: "tool_result",
+				toolName: "write",
+				toolCallId: "write-b",
+				input: { path: "b.ts" },
+				content: [],
+				isError: false,
+			} as unknown as ToolResultEvent,
 			ctx,
 		);
-		firstSend.resolve({ stdout: "", stderr: "", code: 0 });
-		await Promise.resolve();
-		await Promise.resolve();
-		await Promise.resolve();
-		await handlers.agent_end!(aborted, ctx);
+		await handlers.agent_end!(success, ctx);
+		await handlers.agent_end!(success, ctx);
 
 		expect(execCalls).toHaveLength(2);
+		expect(execCalls[0].args).toContain("Reviewed a.ts");
+		expect(execCalls[0].args).not.toContain("Updated b.ts");
+		expect(execCalls[1].args).toContain("Updated b.ts");
+		expect(execCalls[1].args).not.toContain("Reviewed a.ts");
 	});
 
-	it("releases failed payloads and retries on the next run", async () => {
+	it("retries the next notification after a nonzero result without a new run circuit", async () => {
 		const resultCodes = [1, 0];
 		const { pi, handlers, execCalls } = createMockPI(() => ({
 			stdout: "",
@@ -399,33 +438,14 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 			messages: [{ role: "assistant", stopReason: "aborted" }],
 		} as unknown as AgentEndEvent;
 
-		await handlers.agent_start!(
-			{ type: "agent_start" } as AgentStartEvent,
-			ctx,
-		);
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
 		await handlers.agent_end!(aborted, ctx);
 		await Promise.resolve();
 		await Promise.resolve();
-		await handlers.agent_end!(
-			{
-				type: "agent_end",
-				messages: [
-					{
-						role: "assistant",
-						stopReason: "error",
-						errorMessage: "Suppressed in the failed run",
-					},
-				],
-			} as unknown as AgentEndEvent,
-			ctx,
-		);
-		expect(execCalls).toHaveLength(1);
+		await Promise.resolve();
+		await handlers.agent_end!(aborted, ctx);
 
-		await handlers.agent_start!(
-			{ type: "agent_start" } as AgentStartEvent,
-			ctx,
-		);
-		await handlers.agent_end!(aborted, ctx);
 		expect(execCalls).toHaveLength(2);
 	});
 
@@ -564,7 +584,7 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 		await handlerPromise;
 	});
 
-	it("clears notifications even when the run failure circuit is open", async () => {
+	it("does not perform global cleanup after a failed send or shutdown", async () => {
 		const { pi, handlers, execCalls } = createMockPI(() => ({
 			stdout: "",
 			stderr: "",
@@ -573,10 +593,7 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 		registerNotifyHandlers(pi);
 		const ctx = createMockContext(true);
 
-		await handlers.agent_start!(
-			{ type: "agent_start" } as AgentStartEvent,
-			ctx,
-		);
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
 		await handlers.agent_end!(
 			{
 				type: "agent_end",
@@ -585,35 +602,21 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 			ctx,
 		);
 		await Promise.resolve();
-		await Promise.resolve();
 		await handlers.session_shutdown!(
 			{ type: "session_shutdown" } as SessionShutdownEvent,
 			ctx,
 		);
 
-		expect(execCalls.map((call) => call.args[0])).toEqual([
-			"notify",
-			"clear-notifications",
-		]);
+		expect(execCalls.map((call) => call.args[0])).toEqual(["notify"]);
 	});
 
-	it("clears again after notifications in flight at shutdown settle", async () => {
+	it("does not execute cleanup when an old in-flight send settles", async () => {
 		const send = Promise.withResolvers<MockExecResult>();
-		const finalClear = Promise.withResolvers<void>();
-		let clearCount = 0;
-		const { pi, handlers, execCalls } = createMockPI((_tool, args) => {
-			if (args[0] === "notify") return send.promise;
-			clearCount++;
-			if (clearCount === 3) finalClear.resolve();
-			return { stdout: "", stderr: "", code: 0 };
-		});
+		const { pi, handlers, execCalls } = createMockPI(() => send.promise);
 		registerNotifyHandlers(pi);
 		const ctx = createMockContext(true);
 
-		await handlers.agent_start!(
-			{ type: "agent_start" } as AgentStartEvent,
-			ctx,
-		);
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
 		await handlers.agent_end!(
 			{
 				type: "agent_end",
@@ -629,24 +632,16 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 			{ type: "session_start" } as SessionStartEvent,
 			ctx,
 		);
+		expect(execCalls).toHaveLength(1);
 
-		expect(execCalls.map((call) => call.args[0])).toEqual([
-			"notify",
-			"clear-notifications",
-			"clear-notifications",
-		]);
 		send.resolve({ stdout: "", stderr: "", code: 0 });
-		await finalClear.promise;
-
-		expect(execCalls.map((call) => call.args[0])).toEqual([
-			"notify",
-			"clear-notifications",
-			"clear-notifications",
-			"clear-notifications",
-		]);
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		expect(execCalls).toHaveLength(1);
 	});
 
-	it("session_start clears notifications and initializes delivery state", async () => {
+	it("session_start resets debounce and pending run state without cmux cleanup", async () => {
 		const { pi, handlers, execCalls } = createMockPI();
 		registerNotifyHandlers(pi);
 		const ctx = createMockContext(true);
@@ -655,28 +650,23 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 			messages: [{ role: "assistant", stopReason: "aborted" }],
 		} as unknown as AgentEndEvent;
 
-		await handlers.agent_start!(
-			{ type: "agent_start" } as AgentStartEvent,
-			ctx,
-		);
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
 		await handlers.agent_end!(aborted, ctx);
 		await Promise.resolve();
 		await Promise.resolve();
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
 		await handlers.session_start!(
 			{ type: "session_start" } as SessionStartEvent,
 			ctx,
 		);
-		await handlers.agent_start!(
-			{ type: "agent_start" } as AgentStartEvent,
-			ctx,
-		);
+		await handlers.agent_end!(aborted, ctx);
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
 		await handlers.agent_end!(aborted, ctx);
 
-		expect(execCalls.map((call) => call.args[0])).toEqual([
-			"notify",
+		expect(execCalls.map((call) => call.args[0])).toEqual(["notify", "notify"]);
+		expect(execCalls.flatMap((call) => call.args)).not.toContain(
 			"clear-notifications",
-			"notify",
-		]);
+		);
 	});
 
 	it("ignores session_start when hasUI=false (child agent)", async () => {
@@ -723,6 +713,7 @@ describe("registerNotifyHandlers summary notifications", () => {
 			"Plan Ready",
 			"--subtitle",
 			"Review the plan to apply or refine",
+			...TARGET_ARGS,
 		]);
 		expect(execCalls[0].args).not.toContain("Aborted");
 	});
@@ -749,6 +740,7 @@ describe("registerNotifyHandlers summary notifications", () => {
 			"Aborted",
 			"--subtitle",
 			"Session was aborted",
+			...TARGET_ARGS,
 		]);
 	});
 
@@ -796,5 +788,189 @@ describe("registerNotifyHandlers summary notifications", () => {
 			"Task Complete",
 			"Waiting",
 		]);
+	});
+
+	it("prefers terminal assistant errors and falls back to tool errors", async () => {
+		const { pi, handlers, execCalls } = createMockPI();
+		registerNotifyHandlers(pi);
+		const ctx = createMockContext(true);
+		const toolError = {
+			type: "tool_result",
+			toolName: "bash",
+			toolCallId: "failed-tool",
+			input: { command: "false" },
+			content: [{ type: "text", text: "old tool failure" }],
+			isError: true,
+		} as unknown as ToolResultEvent;
+
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.tool_result!(toolError, ctx);
+		await handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [
+					{
+						role: "assistant",
+						stopReason: "error",
+						errorMessage: "terminal failure",
+					},
+				],
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.tool_result!(toolError, ctx);
+		await handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [{ role: "assistant", stopReason: "error" }],
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+
+		expect(execCalls[0].args).toContain("terminal failure");
+		expect(execCalls[0].args).not.toContain("old tool failure");
+		expect(execCalls[1].args).toContain("old tool failure");
+	});
+
+	it("uses explicit kinds for low and medium notification policies", async () => {
+		const ctx = createMockContext(true);
+		process.env.OMP_CMUX_NOTIFY_LEVEL = "low";
+		const low = createMockPI();
+		registerNotifyHandlers(low.pi);
+		await low.handlers.agent_start!(
+			{ type: "agent_start" } as AgentStartEvent,
+			ctx,
+		);
+		await low.handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [
+					{
+						role: "assistant",
+						stopReason: "aborted",
+						errorMessage: "__omp.silent_abort__",
+					},
+				],
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+		await low.handlers.agent_start!(
+			{ type: "agent_start" } as AgentStartEvent,
+			ctx,
+		);
+		await low.handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [{ role: "assistant", stopReason: "error" }],
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+		await low.handlers.agent_start!(
+			{ type: "agent_start" } as AgentStartEvent,
+			ctx,
+		);
+		await low.handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [{ role: "assistant", stopReason: "aborted" }],
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+		expect(low.execCalls.map((call) => call.args[2])).toEqual([
+			"Error",
+			"Aborted",
+		]);
+
+		process.env.OMP_CMUX_NOTIFY_LEVEL = "medium";
+		process.env.PI_CMUX_NOTIFY_THRESHOLD_MS = "0";
+		const medium = createMockPI();
+		registerNotifyHandlers(medium.pi);
+		await medium.handlers.agent_start!(
+			{ type: "agent_start" } as AgentStartEvent,
+			ctx,
+		);
+		await medium.handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [
+					{
+						role: "assistant",
+						stopReason: "aborted",
+						errorMessage: "__omp.silent_abort__",
+					},
+				],
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+		expect(medium.execCalls.map((call) => call.args[2])).toEqual(["Plan Ready"]);
+	});
+
+	it("retries after a rejected send without a new agent_start", async () => {
+		const { pi, handlers, execCalls } = createMockPI((_tool, _args, callNumber) =>
+			callNumber === 1
+				? Promise.reject(new Error("launch failed"))
+				: { stdout: "", stderr: "", code: 0 },
+		);
+		registerNotifyHandlers(pi);
+		const ctx = createMockContext(true);
+		const aborted = {
+			type: "agent_end",
+			messages: [{ role: "assistant", stopReason: "aborted" }],
+		} as unknown as AgentEndEvent;
+
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.agent_end!(aborted, ctx);
+		await Promise.resolve();
+		await Promise.resolve();
+		await Promise.resolve();
+		await handlers.agent_end!(aborted, ctx);
+
+		expect(execCalls).toHaveLength(2);
+	});
+
+	it("falls back from a negative threshold and an infinite debounce", async () => {
+		const ctx = createMockContext(true);
+		process.env.OMP_CMUX_NOTIFY_LEVEL = "all";
+		process.env.PI_CMUX_NOTIFY_THRESHOLD_MS = "-1";
+		const threshold = createMockPI();
+		registerNotifyHandlers(threshold.pi);
+		await threshold.handlers.agent_start!(
+			{ type: "agent_start" } as AgentStartEvent,
+			ctx,
+		);
+		await threshold.handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [{ role: "assistant", stopReason: "endTurn" }],
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+		expect(threshold.execCalls.map((call) => call.args[2])).toEqual([
+			"Task Complete",
+		]);
+
+		process.env.OMP_CMUX_NOTIFY_LEVEL = "medium";
+		process.env.PI_CMUX_NOTIFY_DEBOUNCE_MS = "Infinity";
+		const debounce = createMockPI();
+		registerNotifyHandlers(debounce.pi);
+		const aborted = {
+			type: "agent_end",
+			messages: [{ role: "assistant", stopReason: "aborted" }],
+		} as unknown as AgentEndEvent;
+		await debounce.handlers.agent_start!(
+			{ type: "agent_start" } as AgentStartEvent,
+			ctx,
+		);
+		await debounce.handlers.agent_end!(aborted, ctx);
+		await Promise.resolve();
+		await Promise.resolve();
+		await debounce.handlers.agent_start!(
+			{ type: "agent_start" } as AgentStartEvent,
+			ctx,
+		);
+		await debounce.handlers.agent_end!(aborted, ctx);
+		expect(debounce.execCalls).toHaveLength(1);
 	});
 });

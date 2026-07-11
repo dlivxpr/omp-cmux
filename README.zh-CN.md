@@ -33,7 +33,7 @@ extensions:
   - ~/.omp/extensions/omp-cmux
 ```
 
-在 cmux 中启动时，扩展会自动检测当前 cmux 环境。仅当 cmux 通过自定义 socket 暴露时，才需要显式设置 `CMUX_SOCKET_PATH`。
+在 cmux 中启动时，扩展会自动检测当前 cmux 环境。通知必须具有来自 `CMUX_WORKSPACE_ID`/`CMUX_SURFACE_ID` 或旧版 `CMUX_TAB_ID`/`CMUX_PANEL_ID` 的 caller target；只有 socket 不足以发送通知。仅当 cmux 通过自定义 socket 暴露时，才需要显式设置 `CMUX_SOCKET_PATH`。
 
 ## 配置
 
@@ -42,8 +42,8 @@ extensions:
 | 变量 | 可选值 | 默认值 | 说明 |
 |---|---|---|---|
 | `OMP_CMUX_NOTIFY_LEVEL` | `all`, `medium`, `low`, `disabled` | `medium` | 通知详细程度 |
-| `PI_CMUX_NOTIFY_THRESHOLD_MS` | 毫秒数 | `15000` | "等待输入"通知的延迟时间 |
-| `PI_CMUX_NOTIFY_DEBOUNCE_MS` | 毫秒数 | `3000` | 重复通知的最小间隔 |
+| `PI_CMUX_NOTIFY_THRESHOLD_MS` | 有限、非负的毫秒数（`0` 有效） | `15000` | “等待输入”通知的延迟时间；无效值回退默认值 |
+| `PI_CMUX_NOTIFY_DEBOUNCE_MS` | 有限、非负的毫秒数（`0` 有效） | `3000` | 重复通知的最小间隔；无效值回退默认值 |
 
 ### 通知级别
 

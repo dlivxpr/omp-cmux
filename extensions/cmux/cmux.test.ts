@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, mock, spyOn } from "bun:test";
 import type { ExecResult, ExtensionAPI } from "@oh-my-pi/pi-coding-agent";
 import * as fs from "node:fs";
-import { cmux, cmuxWorkspace } from "./cmux";
+import { cmux, cmuxNotify, cmuxWorkspace } from "./cmux";
 
 const CMUX_TIMEOUT_MS = 5000;
 
@@ -430,5 +430,132 @@ describe("cmux runtime adapter results", () => {
 
 		expect(result).toBe(success);
 		expect(calls[2]).toEqual(timedCall("cmux", ["notify", "--title", "Done"]));
+	});
+});
+
+describe("cmux notification caller targeting", () => {
+	it("targets workspace and surface explicitly", async () => {
+		process.env.CMUX_WORKSPACE_ID = " workspace-1 ";
+		process.env.CMUX_SURFACE_ID = " surface-1 ";
+		const { pi, calls } = createMockPI();
+
+		await cmuxNotify(pi, "notify", "--title", "Done");
+
+		expect(calls).toEqual([
+			timedCall("cmux", [
+				"notify",
+				"--title",
+				"Done",
+				"--workspace",
+				"workspace-1",
+				"--surface",
+				"surface-1",
+			]),
+		]);
+	});
+
+	it("targets legacy tab and panel explicitly", async () => {
+		process.env.CMUX_TAB_ID = "tab-1";
+		process.env.CMUX_PANEL_ID = "panel-1";
+		const { pi, calls } = createMockPI();
+
+		await cmuxNotify(pi, "notify");
+
+		expect(calls).toEqual([
+			timedCall("cmux", [
+				"notify",
+				"--tab",
+				"tab-1",
+				"--panel",
+				"panel-1",
+			]),
+		]);
+	});
+
+	it("prefers workspace and surface over legacy targets", async () => {
+		process.env.CMUX_WORKSPACE_ID = "workspace-new";
+		process.env.CMUX_TAB_ID = "tab-old";
+		process.env.CMUX_SURFACE_ID = "surface-new";
+		process.env.CMUX_PANEL_ID = "panel-old";
+		const { pi, calls } = createMockPI();
+
+		await cmuxNotify(pi, "notify");
+
+		expect(calls[0]).toEqual(
+			timedCall("cmux", [
+				"notify",
+				"--workspace",
+				"workspace-new",
+				"--surface",
+				"surface-new",
+			]),
+		);
+	});
+
+	it("does not dispatch with only socket availability", async () => {
+		process.env.CMUX_SOCKET_PATH = "/tmp/test-cmux.sock";
+		spyOn(fs, "existsSync").mockReturnValue(true);
+		const { pi, calls } = createMockPI();
+
+		expect(await cmuxNotify(pi, "notify")).toBeUndefined();
+		expect(calls).toHaveLength(0);
+	});
+
+	it("uses caller targets refreshed from tmux", async () => {
+		process.env.TMUX = "/tmp/tmux";
+		process.env.CMUX_WORKSPACE_ID = "stale-workspace";
+		const { pi, calls } = createMockPI((command, args) => {
+			if (command !== "tmux") {
+				return { stdout: "", stderr: "", code: 0, killed: false };
+			}
+			return {
+				stdout: args.includes("-g")
+					? "CMUX_WORKSPACE_ID=global-workspace"
+					: [
+							"CMUX_WORKSPACE_ID=session-workspace",
+							"CMUX_SURFACE_ID=session-surface",
+						].join("\n"),
+				stderr: "",
+				code: 0,
+				killed: false,
+			};
+		});
+
+		await cmuxNotify(pi, "notify");
+
+		expect(calls[2]?.args).toEqual([
+			"CMUX_SURFACE_ID=session-surface",
+			"CMUX_WORKSPACE_ID=session-workspace",
+			"cmux",
+			"notify",
+			"--workspace",
+			"session-workspace",
+			"--surface",
+			"session-surface",
+		]);
+	});
+
+	it("uses the real business call once without preflight or retry", async () => {
+		process.env.CMUX_WORKSPACE_ID = "workspace-1";
+		process.env.CMUX_BUNDLED_CLI_PATH = "/opt/cmux/bin/cmux";
+		spyOn(fs, "existsSync").mockImplementation(
+			(path) => path === "/opt/cmux/bin/cmux",
+		);
+		const failed = {
+			stdout: "",
+			stderr: "failed",
+			code: 9,
+			killed: false,
+		};
+		const { pi, calls } = createMockPI(() => failed);
+
+		expect(await cmuxNotify(pi, "notify")).toBe(failed);
+		expect(calls).toEqual([
+			timedCall("/opt/cmux/bin/cmux", [
+				"notify",
+				"--workspace",
+				"workspace-1",
+			]),
+		]);
 	});
 });

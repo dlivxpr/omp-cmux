@@ -33,7 +33,7 @@ extensions:
   - ~/.omp/extensions/omp-cmux
 ```
 
-When launched inside cmux, the extension detects the current cmux environment automatically. Set `CMUX_SOCKET_PATH` explicitly only when cmux is exposed through a custom socket.
+When launched inside cmux, the extension detects the current cmux environment automatically. Notifications require a caller target from `CMUX_WORKSPACE_ID`/`CMUX_SURFACE_ID` or the legacy `CMUX_TAB_ID`/`CMUX_PANEL_ID`; a socket alone is not enough. Set `CMUX_SOCKET_PATH` explicitly only when cmux is exposed through a custom socket.
 
 ## Configuration
 
@@ -42,8 +42,8 @@ All settings via environment variables:
 | Variable | Values | Default | Description |
 |---|---|---|---|
 | `OMP_CMUX_NOTIFY_LEVEL` | `all`, `medium`, `low`, `disabled` | `medium` | Notification verbosity |
-| `PI_CMUX_NOTIFY_THRESHOLD_MS` | milliseconds | `15000` | Minimum run duration before the optional "Ready for input" notification |
-| `PI_CMUX_NOTIFY_DEBOUNCE_MS` | milliseconds | `3000` | Minimum interval between duplicate notifications |
+| `PI_CMUX_NOTIFY_THRESHOLD_MS` | finite, non-negative milliseconds (`0` is valid) | `15000` | Minimum run duration before the optional "Ready for input" notification; invalid values use the default |
+| `PI_CMUX_NOTIFY_DEBOUNCE_MS` | finite, non-negative milliseconds (`0` is valid) | `3000` | Minimum interval between duplicate notifications; invalid values use the default |
 
 ### Notification Levels
 

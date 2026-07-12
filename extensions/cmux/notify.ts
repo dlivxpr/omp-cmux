@@ -26,7 +26,7 @@ function isWriteToolResult(e: ToolResultEvent): boolean {
 	return e.toolName === "write";
 }
 function isSearchToolResult(e: ToolResultEvent): boolean {
-	return e.toolName === "search" || e.toolName === "find";
+	return e.toolName === "grep" || e.toolName === "glob";
 }
 function isBashToolResult(e: ToolResultEvent): boolean {
 	return e.toolName === "bash";

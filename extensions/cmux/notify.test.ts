@@ -219,6 +219,32 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 			} as unknown as ToolResultEvent,
 			ctx,
 		);
+		for (const toolName of ["grep", "glob"]) {
+			await handlers.tool_result!(
+				{
+					type: "tool_result",
+					toolName,
+					toolCallId: `tc-${toolName}`,
+					input: {},
+					content: [],
+					isError: false,
+				} as unknown as ToolResultEvent,
+				ctx,
+			);
+		}
+		for (const toolName of ["search", "find"]) {
+			await handlers.tool_result!(
+				{
+					type: "tool_result",
+					toolName,
+					toolCallId: `tc-legacy-${toolName}`,
+					input: {},
+					content: [],
+					isError: false,
+				} as unknown as ToolResultEvent,
+				ctx,
+			);
+		}
 		await handlers.agent_end!(
 			{
 				type: "agent_end",
@@ -234,7 +260,7 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 				"--title",
 				"Task Complete",
 				"--subtitle",
-				"Reviewed README.md",
+				"Reviewed README.md, Ran 2 searches",
 				...TARGET_ARGS,
 			],
 		});

@@ -29,6 +29,9 @@ function createMockContext(hasUI: boolean): ExtensionContext {
 		shutdown: () => {},
 		getSystemPrompt: () => [],
 		memory: undefined,
+		setInterval: () => ({}) as Timer,
+		setTimeout: () => ({}) as Timer,
+		clearTimer: () => {},
 	} as ExtensionContext;
 }
 

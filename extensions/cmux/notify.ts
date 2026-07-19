@@ -59,6 +59,16 @@ function createRunState(): RunState {
 	};
 }
 
+function mergeRunState(target: RunState, source: RunState): RunState {
+	target.startedAt = Math.min(target.startedAt, source.startedAt);
+	for (const path of source.readFiles) target.readFiles.add(path);
+	for (const path of source.changedFiles) target.changedFiles.add(path);
+	target.searchCount += source.searchCount;
+	target.bashCount += source.bashCount;
+	target.firstToolError = target.firstToolError ?? source.firstToolError;
+	return target;
+}
+
 
 function extractTarget(toolName: string, input: Record<string, unknown>): string {
 	switch (toolName) {
@@ -286,6 +296,7 @@ function safeSendNotification(
 
 export function registerNotifyHandlers(pi: ExtensionAPI): void {
 	const pendingRuns: PendingRun[] = [];
+	let deferredState: RunState | undefined;
 	const deliveryState: NotificationDeliveryState = {
 		sessionGeneration: 0,
 		inFlightByKey: new Map(),
@@ -332,12 +343,23 @@ export function registerNotifyHandlers(pi: ExtensionAPI): void {
 		const pendingRun = pendingRuns.shift();
 		if (!pendingRun) return;
 
+		if (event.willContinue === true) {
+			deferredState = deferredState
+				? mergeRunState(deferredState, pendingRun.state)
+				: pendingRun.state;
+			return;
+		}
+
+		const state = deferredState
+			? mergeRunState(deferredState, pendingRun.state)
+			: pendingRun.state;
+		deferredState = undefined;
 		const status = getAgentEndStatus(event.messages);
 		const terminalError =
 			status === "error" ? getErrorMessage(event.messages) : undefined;
-		const durationMs = Date.now() - pendingRun.state.startedAt;
+		const durationMs = Date.now() - state.startedAt;
 		const summary = generateSummary(
-			pendingRun.state,
+			state,
 			durationMs,
 			status,
 			terminalError,
@@ -363,6 +385,7 @@ export function registerNotifyHandlers(pi: ExtensionAPI): void {
 	pi.on("session_start", async (_event: SessionStartEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
 		pendingRuns.length = 0;
+		deferredState = undefined;
 		deliveryState.sessionGeneration++;
 		deliveryState.inFlightByKey.clear();
 		deliveryState.deliveredAtByKey.clear();
@@ -370,6 +393,7 @@ export function registerNotifyHandlers(pi: ExtensionAPI): void {
 
 	pi.on("session_shutdown", async (_event: SessionShutdownEvent) => {
 		pendingRuns.length = 0;
+		deferredState = undefined;
 		deliveryState.sessionGeneration++;
 		deliveryState.inFlightByKey.clear();
 		deliveryState.deliveredAtByKey.clear();

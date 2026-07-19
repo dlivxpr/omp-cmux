@@ -453,6 +453,122 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 		expect(execCalls[1].args).not.toContain("Reviewed a.ts");
 	});
 
+	it("defers continuation notifications and merges the final summary", async () => {
+		process.env.OMP_CMUX_NOTIFY_LEVEL = "all";
+		process.env.PI_CMUX_NOTIFY_THRESHOLD_MS = "0";
+		const { pi, handlers, execCalls } = createMockPI();
+		registerNotifyHandlers(pi);
+		const ctx = createMockContext(true);
+
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.tool_result!(
+			{
+				type: "tool_result",
+				toolName: "read",
+				toolCallId: "read-a",
+				input: { path: "a.ts" },
+				content: [],
+				isError: false,
+			} as unknown as ToolResultEvent,
+			ctx,
+		);
+		await handlers.tool_result!(
+			{
+				type: "tool_result",
+				toolName: "grep",
+				toolCallId: "grep-a",
+				input: {},
+				content: [],
+				isError: false,
+			} as unknown as ToolResultEvent,
+			ctx,
+		);
+		await handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [{ role: "assistant", stopReason: "endTurn" }],
+				willContinue: true,
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+
+		expect(execCalls).toHaveLength(0);
+
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.tool_result!(
+			{
+				type: "tool_result",
+				toolName: "write",
+				toolCallId: "write-b",
+				input: { path: "b.ts" },
+				content: [],
+				isError: false,
+			} as unknown as ToolResultEvent,
+			ctx,
+		);
+		await handlers.tool_result!(
+			{
+				type: "tool_result",
+				toolName: "bash",
+				toolCallId: "bash-b",
+				input: { command: "true" },
+				content: [],
+				isError: false,
+			} as unknown as ToolResultEvent,
+			ctx,
+		);
+		await handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [{ role: "assistant", stopReason: "endTurn" }],
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+
+		const titles = execCalls.map((call) => call.args[2]);
+		expect(titles).toEqual(["Task Complete", "Waiting"]);
+		expect(titles.filter((title) => title === "Task Complete")).toHaveLength(1);
+		const subtitleIndex = execCalls[0]!.args.indexOf("--subtitle");
+		expect(execCalls[0]!.args[subtitleIndex + 1]).toContain(
+			"Updated b.ts, Reviewed a.ts, Ran 1 search and 1 shell command",
+		);
+	});
+
+	it("suppresses a recoverable intermediate error before final success", async () => {
+		const { pi, handlers, execCalls } = createMockPI();
+		registerNotifyHandlers(pi);
+		const ctx = createMockContext(true);
+
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [
+					{
+						role: "assistant",
+						stopReason: "error",
+						errorMessage: "transient failure",
+					},
+				],
+				willContinue: true,
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+		expect(execCalls).toHaveLength(0);
+
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.agent_end!(
+			{
+				type: "agent_end",
+				messages: [{ role: "assistant", stopReason: "endTurn" }],
+			} as unknown as AgentEndEvent,
+			ctx,
+		);
+
+		expect(execCalls).toHaveLength(1);
+		expect(execCalls[0]!.args[2]).toBe("Task Complete");
+	});
+
 	it("retries the next notification after a nonzero result without a new run circuit", async () => {
 		const resultCodes = [1, 0];
 		const { pi, handlers, execCalls } = createMockPI(() => ({
@@ -697,6 +813,94 @@ describe("registerNotifyHandlers child-agent filtering", () => {
 			"clear-notifications",
 		);
 	});
+
+	for (const reset of [
+		{
+			name: "session_start",
+			event: { type: "session_start" } as SessionStartEvent,
+		},
+		{
+			name: "session_shutdown",
+			event: { type: "session_shutdown" } as SessionShutdownEvent,
+		},
+	] as const) {
+		it(`${reset.name} clears deferred continuation summary state`, async () => {
+			const { pi, handlers, execCalls } = createMockPI();
+			registerNotifyHandlers(pi);
+			const ctx = createMockContext(true);
+
+			await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+			await handlers.tool_result!(
+				{
+					type: "tool_result",
+					toolName: "read",
+					toolCallId: "old-read",
+					input: { path: "old.ts" },
+					content: [],
+					isError: false,
+				} as unknown as ToolResultEvent,
+				ctx,
+			);
+			await handlers.tool_result!(
+				{
+					type: "tool_result",
+					toolName: "grep",
+					toolCallId: "old-grep",
+					input: {},
+					content: [],
+					isError: false,
+				} as unknown as ToolResultEvent,
+				ctx,
+			);
+			await handlers.agent_end!(
+				{
+					type: "agent_end",
+					messages: [{ role: "assistant", stopReason: "endTurn" }],
+					willContinue: true,
+				} as unknown as AgentEndEvent,
+				ctx,
+			);
+			expect(execCalls).toHaveLength(0);
+
+			await handlers[reset.name]!(reset.event, ctx);
+			await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+			await handlers.tool_result!(
+				{
+					type: "tool_result",
+					toolName: "write",
+					toolCallId: "new-write",
+					input: { path: "new.ts" },
+					content: [],
+					isError: false,
+				} as unknown as ToolResultEvent,
+				ctx,
+			);
+			await handlers.tool_result!(
+				{
+					type: "tool_result",
+					toolName: "bash",
+					toolCallId: "new-bash",
+					input: { command: "true" },
+					content: [],
+					isError: false,
+				} as unknown as ToolResultEvent,
+				ctx,
+			);
+			await handlers.agent_end!(
+				{
+					type: "agent_end",
+					messages: [{ role: "assistant", stopReason: "endTurn" }],
+				} as unknown as AgentEndEvent,
+				ctx,
+			);
+
+			expect(execCalls).toHaveLength(1);
+			const notification = execCalls[0]!.args.join(" ");
+			expect(notification).toContain("Updated new.ts, Ran 1 shell command");
+			expect(notification).not.toContain("old.ts");
+			expect(notification).not.toContain("search");
+		});
+	}
 
 	it("ignores session_start when hasUI=false (child agent)", async () => {
 		const { pi, handlers, execCalls } = createMockPI();

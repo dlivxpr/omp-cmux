@@ -178,7 +178,7 @@ describe("registerSidebarHandlers", () => {
 		]);
 	});
 
-	it("serializes Working then Idle for the same key", async () => {
+	it("keeps Working across continuation before the final Idle state", async () => {
 		const first = Promise.withResolvers<ExecResult>();
 		const { pi, handlers, execCalls } = createMockPI((_tool, _args, callNumber) =>
 			callNumber === 1 ? first.promise : OK,
@@ -188,19 +188,39 @@ describe("registerSidebarHandlers", () => {
 
 		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
 		await settleQueue();
-		await handlers.agent_end!({ type: "agent_end" } as AgentEndEvent, ctx);
+		await handlers.tool_execution_start!(
+			{
+				type: "tool_execution_start",
+				toolCallId: "tool-1",
+				toolName: "read",
+				args: {},
+			} as unknown as ToolExecutionStartEvent,
+			ctx,
+		);
+		await handlers.agent_end!(
+			{ type: "agent_end", willContinue: true } as AgentEndEvent,
+			ctx,
+		);
 		await settleQueue();
 		expect(execCalls).toHaveLength(1);
+
 		first.resolve(OK);
+		await settleQueue();
+		expect(applyStatusCalls(execCalls).get("omp_state")).toBe("Working");
+		expect(applyStatusCalls(execCalls).has("omp_tool")).toBe(false);
+
+		await handlers.agent_start!({ type: "agent_start" } as AgentStartEvent, ctx);
+		await handlers.agent_end!({ type: "agent_end" } as AgentEndEvent, ctx);
 		await settleQueue();
 
 		expect(applyStatusCalls(execCalls).get("omp_state")).toBe("Idle");
 		expect(execCalls[0]!.args).toEqual(
 			setCall("omp_state", "Working", "arrow.circlepath", "#F59E0B", 100),
 		);
-		expect(execCalls[1]!.args).toEqual(
+		expect(execCalls.at(-2)!.args).toEqual(
 			setCall("omp_state", "Idle", "checkmark.circle", "#22C55E", 100),
 		);
+		expect(execCalls.at(-1)!.args).toEqual(["clear-status", "omp_tool"]);
 	});
 
 	it("keeps agent_start after a delayed initialization projection", async () => {

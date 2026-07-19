@@ -220,9 +220,9 @@ export function registerSidebarHandlers(pi: ExtensionAPI): void {
 		writer.set("omp_state", "Working");
 	});
 
-	pi.on("agent_end", async (_event: AgentEndEvent, ctx: ExtensionContext) => {
+	pi.on("agent_end", async (event: AgentEndEvent, ctx: ExtensionContext) => {
 		if (!ctx.hasUI) return;
-		writer.set("omp_state", "Idle");
+		writer.set("omp_state", event.willContinue === true ? "Working" : "Idle");
 		writer.clear("omp_tool");
 
 		const tokens = ctx.getContextUsage()?.tokens;
